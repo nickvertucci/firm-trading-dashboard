@@ -2,9 +2,9 @@
 from nicegui import ui, app as nicegui_app
 from api import app as api_app
 from dashboard import create_dashboard
-from watchlist import Watchlist  # Add this import
-import subprocess
-subprocess.Popen(["python", "worker.py"])  # Starts worker when main.py runs
+from watchlist import Watchlist
+from worker import StockDataWorker, StockInfoWorker  # Import both workers
+import threading
 
 # Mount the API routes at /api
 nicegui_app.mount("/api", api_app)
@@ -40,16 +40,29 @@ def dashboard_page():
     with ui.card().classes("w-full max-w-4xl mx-auto p-4"):
         create_dashboard()
     
-    # Right-hand sidebar with watchlist
     with ui.right_drawer(fixed=True).classes("bg-gray-100 p-4 w-1/4") as sidebar:
         watchlist = Watchlist()
         watchlist.build()
-        # Keep the toggle button inside if you want it
         ui.button("Toggle Sidebar", on_click=sidebar.toggle).classes("mt-4")
     
-    # External toggle button
     ui.button("Toggle Sidebar", on_click=sidebar.toggle).classes("fixed bottom-4 right-4")
+
+# Functions to start workers
+def start_price_worker():
+    worker = StockDataWorker()
+    worker.run()
+
+def start_info_worker():
+    worker = StockInfoWorker()
+    worker.run()
 
 # Run the app with NiceGUI
 if __name__ in {"__main__", "__mp_main__"}:
+    # Start both workers in separate threads
+    price_thread = threading.Thread(target=start_price_worker, daemon=True)
+    info_thread = threading.Thread(target=start_info_worker, daemon=True)
+    price_thread.start()
+    info_thread.start()
+    
+    # Run NiceGUI
     ui.run(host="0.0.0.0", port=8000)

@@ -32,17 +32,6 @@ def get_stock_data():
         cursor = collection.find(query_filter).sort("timestamp", pymongo.ASCENDING)
         
         result = [{k: v for k, v in doc.items() if k != "_id"} for doc in cursor]
-
-        # If no data found, return fallback data for watchlist tickers
-        if not result:
-            return [{
-                "symbol": ticker,
-                "open": 150.0,
-                "high": 155.0,
-                "low": 145.0,
-                "close": 152.0,
-                "timestamp": datetime.now().isoformat()
-            } for ticker in tickers]
         
         return result
     
