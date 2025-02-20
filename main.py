@@ -2,6 +2,9 @@
 from nicegui import ui, app as nicegui_app
 from api import app as api_app
 from dashboard import create_dashboard
+from watchlist import Watchlist  # Add this import
+import subprocess
+subprocess.Popen(["python", "worker.py"])  # Starts worker when main.py runs
 
 # Mount the API routes at /api
 nicegui_app.mount("/api", api_app)
@@ -36,15 +39,15 @@ def dashboard_page():
     create_header()
     with ui.card().classes("w-full max-w-4xl mx-auto p-4"):
         create_dashboard()
-    # Right-hand sidebar (top-level element)
+    
+    # Right-hand sidebar with watchlist
     with ui.right_drawer(fixed=True).classes("bg-gray-100 p-4 w-1/4") as sidebar:
-        ui.label("Dashboard Sidebar").classes("text-xl font-semibold mb-4")
-        ui.label("Additional Info").classes("text-lg mb-2")
-        ui.label("Coming Soon:").classes("text-sm text-gray-600")
-        ui.label("- Stock Details").classes("text-sm")
-        ui.label("- Quick Actions").classes("text-sm")
+        watchlist = Watchlist()
+        watchlist.build()
+        # Keep the toggle button inside if you want it
         ui.button("Toggle Sidebar", on_click=sidebar.toggle).classes("mt-4")
-    # Use toggle instead of open for the external button
+    
+    # External toggle button
     ui.button("Toggle Sidebar", on_click=sidebar.toggle).classes("fixed bottom-4 right-4")
 
 # Run the app with NiceGUI

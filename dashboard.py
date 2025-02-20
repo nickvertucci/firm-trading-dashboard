@@ -1,9 +1,8 @@
-# dashboard.py
 from nicegui import ui
 import httpx
-import pandas as pd
 from datetime import datetime
 import pytz
+from watchlist import Watchlist
 
 async def fetch_stocks():
     async with httpx.AsyncClient(timeout=30.0) as client:
@@ -12,28 +11,49 @@ async def fetch_stocks():
 
 def create_dashboard():
     ui.label("Investment Trading Dashboard").classes("text-2xl font-bold mb-4")
-
+    
+    # Initialize watchlist
+    watchlist = Watchlist()
+    
     async def update_table():
         stocks_data = await fetch_stocks()
-        if not stocks_data:
+        if not stocks_data or not watchlist.watchlist_items:
+            table.clear()
+            with table:
+                ui.label("No tickers in watchlist or no data available").classes("text-gray-600")
             return
-        latest = stocks_data[-1]
-        utc_time = datetime.strptime(latest["timestamp"], "%Y-%m-%dT%H:%M:%S%z")
+        
+        # Group by timestamp and get latest data for each ticker
+        latest_by_ticker = {}
+        for entry in stocks_data:
+            ticker = entry["ticker"]  # Changed from "symbol"
+            timestamp = entry["timestamp"]
+            if ticker not in latest_by_ticker or latest_by_ticker[ticker]["timestamp"] < timestamp:
+                latest_by_ticker[ticker] = entry
+        
+        # Convert latest timestamp to local time
+        latest_entry = max(stocks_data, key=lambda x: x["timestamp"])
+        utc_time = datetime.fromisoformat(latest_entry["timestamp"])  # Handles +00:00
         local_tz = datetime.now().astimezone().tzinfo
         local_time = utc_time.astimezone(local_tz).strftime("%H:%M")
+        
         table.clear()
         with table:
+            rows = [
+                {
+                    "ticker": item["ticker"],  # Changed from "symbol"
+                    "price": latest_by_ticker.get(item["ticker"], {}).get("close", "N/A"),
+                    "timestamp": local_time
+                }
+                for item in watchlist.watchlist_items
+            ]
             ui.table(
                 columns=[
-                    {"name": "symbol", "label": "Symbol", "field": "symbol"},
+                    {"name": "ticker", "label": "Ticker", "field": "ticker"},  # Changed from "symbol"
                     {"name": "price", "label": "Price ($)", "field": "price"},
                     {"name": "timestamp", "label": "Time", "field": "timestamp"}
                 ],
-                rows=[
-                    {"symbol": "AAPL", "price": latest.get("AAPL", {}).get("close"), "timestamp": local_time},
-                    {"symbol": "GOOGL", "price": latest.get("GOOGL", {}).get("close"), "timestamp": local_time},
-                    {"symbol": "TSLA", "price": latest.get("TSLA", {}).get("close"), "timestamp": local_time}
-                ]
+                rows=rows
             ).classes("w-full")
 
     table = ui.column()
@@ -41,37 +61,47 @@ def create_dashboard():
 
     async def update_chart():
         stocks_data = await fetch_stocks()
-        if not stocks_data:
+        if not stocks_data or not watchlist.watchlist_items:
+            chart.options["series"] = []
+            chart.options["xAxis"]["data"] = []
+            chart.update()
             return
-        local_tz = datetime.now().astimezone().tzinfo
-        timestamps = [
-            datetime.strptime(row["timestamp"], "%Y-%m-%dT%H:%M:%S%z")
-            .astimezone(local_tz)
-            .strftime("%H:%M")
-            for row in stocks_data
-        ]
-        aapl_ohlc = [
-            [row["AAPL"]["open"], row["AAPL"]["close"], row["AAPL"]["low"], row["AAPL"]["high"]]  # Correct order: [O, C, L, H]
-            for row in stocks_data if "AAPL" in row and all(k in row["AAPL"] for k in ["open", "high", "low", "close"])
-        ]
         
-        chart.options["xAxis"]["data"] = timestamps
-        chart.options["series"] = [{
-            "name": "AAPL",
-            "type": "candlestick",
-            "data": aapl_ohlc,
-            "itemStyle": {
-                "color": "#00da3c",  # Green for up (close > open)
-                "color0": "#ec0000",  # Red for down (close < open)
-                "borderColor": "#00da3c",
-                "borderColor0": "#ec0000"
-            },
-            "barWidth": 4
-        }]
-        chart.update()
+        local_tz = datetime.now().astimezone().tzinfo
+        default_ticker = watchlist.watchlist_items[0]["ticker"] if watchlist.watchlist_items else None
+        
+        if default_ticker:
+            # Filter data for the default ticker
+            ticker_data = [row for row in stocks_data if row["ticker"] == default_ticker]  # Changed from "symbol"
+            timestamps = [
+                datetime.fromisoformat(row["timestamp"])  # Handles +00:00
+                .astimezone(local_tz)
+                .strftime("%H:%M")
+                for row in ticker_data
+            ]
+            ohlc_data = [
+                [row["open"], row["close"], row["low"], row["high"]]
+                for row in ticker_data
+            ]
+            
+            chart.options["title"]["text"] = f"{default_ticker} 1-Minute Candlestick (Today)"
+            chart.options["xAxis"]["data"] = timestamps
+            chart.options["series"] = [{
+                "name": default_ticker,
+                "type": "candlestick",
+                "data": ohlc_data,
+                "itemStyle": {
+                    "color": "#00da3c",
+                    "color0": "#ec0000",
+                    "borderColor": "#00da3c",
+                    "borderColor0": "#ec0000"
+                },
+                "barWidth": 4
+            }]
+            chart.update()
 
     chart = ui.echart({
-        "title": {"text": "AAPL 1-Minute Candlestick (Today)"},
+        "title": {"text": "Candlestick Chart"},
         "xAxis": {
             "type": "category",
             "data": [],
@@ -84,19 +114,11 @@ def create_dashboard():
             "min": "dataMin",
             "max": "dataMax"
         },
-        "series": [{
-            "name": "AAPL",
-            "type": "candlestick",
-            "data": [],
-            "itemStyle": {
-                "color": "#00da3c",
-                "color0": "#ec0000",
-                "borderColor": "#00da3c",
-                "borderColor0": "#ec0000"
-            },
-            "barWidth": 4
-        }],
-        "tooltip": {"trigger": "axis", "formatter": "{b}<br>Open: ${c[0]}<br>Close: ${c[1]}<br>Low: ${c[2]}<br>High: ${c[3]}"},  # Updated tooltip
+        "series": [],
+        "tooltip": {"trigger": "axis", "formatter": "{b}<br>Open: ${c[0]}<br>Close: ${c[1]}<br>Low: ${c[2]}<br>High: ${c[3]}"},
         "dataZoom": [{"type": "inside"}, {"type": "slider"}]
     }).classes("h-96")
     ui.timer(30.0, update_chart)
+
+# Run the dashboard
+ui.run()
