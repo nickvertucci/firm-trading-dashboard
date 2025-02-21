@@ -1,0 +1,8 @@
+fastapi
+nicegui
+uvicorn
+httpx
+dotenv
+pymongo
+yfinance
+alpaca-py
