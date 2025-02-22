@@ -7,6 +7,8 @@ from workers.data_ohlcv_fetcher import DataOHLCVFetcher
 from workers.data_info_fetcher import DataInfoFetcher
 from components.watchlist_card import Watchlist, watchlist_card
 from components.mostActivelist_card import most_active_card
+from components.firmGainers_card import firm_gainers_card
+
 import asyncio
 import logging
 
@@ -81,6 +83,7 @@ async def dashboard_page():
         # Left sidebar for Most Active
         with ui.left_drawer(fixed=False).classes("bg-gray-100 p-4 w-64") as left_sidebar:
             most_active_card()
+            firm_gainers_card()
 
         # Right sidebar for Watchlist
         with ui.right_drawer(fixed=False).classes("bg-gray-100 p-4 w-64") as right_sidebar:
