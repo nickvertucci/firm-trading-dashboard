@@ -28,7 +28,7 @@ def most_active_card():
                 if not quotes:
                     ui.label("No active stocks available").classes("text-gray-600 text-sm")
                 else:
-                    for quote in quotes[:10]:  # Limit to top 10
+                    for quote in quotes[:5]:  # Limit to top 10
                         ui.label(
                             f"${quote['symbol']} - ${quote['regularMarketPrice']:.2f}"
                         ).classes("text-sm truncate")
