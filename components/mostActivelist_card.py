@@ -30,8 +30,8 @@ def most_active_card():
                 else:
                     for quote in quotes[:10]:  # Limit to top 10
                         ui.label(
-                            f"{quote['symbol']} - {quote.get('displayName', quote['longName'])} ${quote['regularMarketPrice']:.2f}"
-                        ).classes("text-sm truncate")  # Truncate long names
+                            f"${quote['symbol']} - ${quote['regularMarketPrice']:.2f}"
+                        ).classes("text-sm truncate")
 
         # Initial update and periodic refresh
         ui.timer(0.1, update_card, once=True)  # Immediate first load

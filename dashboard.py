@@ -2,8 +2,6 @@
 from nicegui import ui
 import httpx
 from datetime import datetime
-from components.mostActivelist_card import most_active_card
-from components.watchlist_card import watchlist_card  # Import the new card
 
 async def fetch_stocks():
     """Fetch stock OHLCV data from the API"""
@@ -16,19 +14,10 @@ async def fetch_stocks():
             print(f"Error fetching stock data: {e}")
             return []
 
-def create_dashboard():
-    """Create a simple table-based dashboard with watchlist and most active cards"""
-    with ui.column().classes("w-full max-w-7xl mx-auto p-4"):
-        ui.label("Investment Trading Dashboard").classes("text-2xl font-bold mb-4")
-        
-        # Layout: Cards on the left, table on the right
-        with ui.row().classes("w-full"):
-            with ui.column().classes("w-1/4"):
-                watchlist = watchlist_card()  # Get the Watchlist instance
-                most_active_card()
-            
-            # Main table area
-            table = ui.column().classes("w-3/4")
+def create_dashboard(watchlist):
+    """Create the central dashboard content (title and table)"""
+    ui.label("Investment Trading Dashboard").classes("text-2xl font-bold mb-4")
+    table = ui.column().classes("w-full")
     
     async def update_table():
         """Update the table with the latest stock data"""
@@ -74,11 +63,13 @@ def create_dashboard():
                 row_key="ticker"
             ).classes("w-full").props("dense")
 
-    watchlist.add_callback(update_table)  # Register the table update callback
+    watchlist.add_callback(update_table)
     ui.timer(0.1, update_table, once=True)
     
     return update_table
 
 if __name__ in {"__main__", "__mp_main__"}:
-    create_dashboard()
+    from components.watchlist_card import watchlist_card
+    watchlist = watchlist_card()
+    create_dashboard(watchlist)
     ui.run()

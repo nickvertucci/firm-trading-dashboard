@@ -2,8 +2,11 @@
 from nicegui import ui, app as nicegui_app
 from fastapi.staticfiles import StaticFiles
 from api import app as api_app
-from dashboard import create_dashboard  # No need for update_most_actives_sidebar
-from workers import DataOHLCVFetcher, DataInfoFetcher
+from dashboard import create_dashboard
+from workers.data_ohlcv_fetcher import DataOHLCVFetcher
+from workers.data_info_fetcher import DataInfoFetcher
+from components.watchlist_card import Watchlist, watchlist_card
+from components.mostActivelist_card import most_active_card
 import asyncio
 import logging
 
@@ -14,8 +17,8 @@ logger = logging.getLogger("TradingDashboard")
 # Mount the API routes at /api
 nicegui_app.mount("/api", api_app)
 
-# Mount static files at root
-nicegui_app.mount("/", StaticFiles(directory="static", html=True), name="static")
+# Mount static files at /static
+nicegui_app.mount("/static", StaticFiles(directory="static", html=True), name="static")
 
 # Shared header navigation with worker status chips
 def create_header():
@@ -70,21 +73,33 @@ def home_page():
 @ui.page("/dashboard")
 async def dashboard_page():
     logger.info("Rendering dashboard page")
-    update_table_callback = None  # Define outside try block
+    update_table_callback = None
     
     try:
         create_header()
         
-        # Main content area with dashboard (cards and table)
-        with ui.column().classes("w-full max-w-7xl mx-auto p-4"):
-            update_table_callback = create_dashboard()  # No watchlist parameter needed
+        # Left sidebar for Most Active
+        with ui.left_drawer(fixed=False).classes("bg-gray-100 p-4 w-64") as left_sidebar:
+            most_active_card()
 
-        # Assign callback to worker and log it
+        # Right sidebar for Watchlist
+        with ui.right_drawer(fixed=False).classes("bg-gray-100 p-4 w-64") as right_sidebar:
+            watchlist = watchlist_card()
+
+        # Main content area with table
+        with ui.element("div").classes("w-full max-w-4xl mx-auto p-4"):
+            update_table_callback = create_dashboard(watchlist)  # Returns the callback function
+
+        # Assign callback to worker
         if update_table_callback is not None:
             data_fetcher.stock_data_worker.update_callback = update_table_callback
             logger.info("Assigned update_table_callback to OHLCV worker")
         else:
             logger.warning("update_table_callback is None, not assigned to worker")
+
+        # Toggle buttons for sidebars
+        ui.button("Toggle Most Active", on_click=left_sidebar.toggle).classes("fixed bottom-4 left-4 bg-gray-600 text-white px-4 py-2 rounded")
+        ui.button("Toggle Watchlist", on_click=right_sidebar.toggle).classes("fixed bottom-4 right-4 bg-gray-600 text-white px-4 py-2 rounded")
     
     except Exception as e:
         logger.error(f"Error rendering dashboard: {e}")
@@ -92,9 +107,9 @@ async def dashboard_page():
     
     return update_table_callback
 
-# Initialize workers (no shared_watchlist needed anymore)
-data_fetcher = DataOHLCVFetcher()  # Adjust constructor if it still needs a Watchlist-like object
-info_fetcher = DataInfoFetcher()
+# Initialize workers with Watchlist class as factory
+data_fetcher = DataOHLCVFetcher(Watchlist)
+info_fetcher = DataInfoFetcher(Watchlist)
 
 # Store worker tasks globally
 price_task = None
