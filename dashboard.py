@@ -2,7 +2,8 @@
 from nicegui import ui
 import httpx
 from datetime import datetime
-from watchlist import Watchlist
+from components.mostActivelist_card import most_active_card
+from components.watchlist_card import watchlist_card  # Import the new card
 
 async def fetch_stocks():
     """Fetch stock OHLCV data from the API"""
@@ -15,37 +16,19 @@ async def fetch_stocks():
             print(f"Error fetching stock data: {e}")
             return []
 
-async def fetch_most_actives():
-    """Fetch most active stocks from the API"""
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        try:
-            response = await client.get("http://localhost:8000/api/most_actives")
-            response.raise_for_status()
-            return response.json()
-        except httpx.HTTPError as e:
-            print(f"Error fetching most actives data: {e}")
-            return {"quotes": []}
-
-async def update_most_actives_sidebar(sidebar_content):
-    """Update the left sidebar with most active stocks"""
-    most_actives_data = await fetch_most_actives()
-    quotes = most_actives_data.get("quotes", [])
-    sidebar_content.clear()
-    with sidebar_content:
-        if not quotes:
-            ui.label("No active stocks available").classes("text-gray-600")
-        else:
-            ui.label("Most Active Stocks").classes("text-lg font-semibold mb-2")
-            for quote in quotes[:10]:  # Limit to top 10
-                ui.label(
-                    f"{quote['symbol']} - {quote.get('displayName', quote['longName'])} ${quote['regularMarketPrice']:.2f}"
-                ).classes("text-sm")
-
-def create_dashboard(watchlist):
-    """Create a simple table-based dashboard that reacts to watchlist changes"""
-    ui.label("Investment Trading Dashboard").classes("text-2xl font-bold mb-4")
-    
-    table = ui.column().classes("w-full")
+def create_dashboard():
+    """Create a simple table-based dashboard with watchlist and most active cards"""
+    with ui.column().classes("w-full max-w-7xl mx-auto p-4"):
+        ui.label("Investment Trading Dashboard").classes("text-2xl font-bold mb-4")
+        
+        # Layout: Cards on the left, table on the right
+        with ui.row().classes("w-full"):
+            with ui.column().classes("w-1/4"):
+                watchlist = watchlist_card()  # Get the Watchlist instance
+                most_active_card()
+            
+            # Main table area
+            table = ui.column().classes("w-3/4")
     
     async def update_table():
         """Update the table with the latest stock data"""
@@ -91,12 +74,11 @@ def create_dashboard(watchlist):
                 row_key="ticker"
             ).classes("w-full").props("dense")
 
-    watchlist.add_callback(update_table)
+    watchlist.add_callback(update_table)  # Register the table update callback
     ui.timer(0.1, update_table, once=True)
     
     return update_table
 
 if __name__ in {"__main__", "__mp_main__"}:
-    watchlist = Watchlist()
-    create_dashboard(watchlist)
+    create_dashboard()
     ui.run()

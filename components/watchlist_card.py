@@ -1,4 +1,4 @@
-# watchlist.py
+# components/watchlist_card.py
 from nicegui import ui
 from pymongo import MongoClient
 import os
@@ -43,7 +43,6 @@ class Watchlist:
             ticker_data = {'ticker': ticker.upper()}
             watchlist_collection.insert_one(ticker_data)
             self.watchlist_items.append(ticker_data)
-            self.refresh_ui()
             # Since this is called from a button (sync context), schedule async notification
             asyncio.create_task(self._notify_callbacks())
 
@@ -51,41 +50,49 @@ class Watchlist:
         """Delete a ticker from watchlist and notify callbacks."""
         watchlist_collection.delete_one({'ticker': ticker})
         self.watchlist_items = [item for item in self.watchlist_items if item['ticker'] != ticker]
-        self.refresh_ui()
         # Since this is called from a button (sync context), schedule async notification
         asyncio.create_task(self._notify_callbacks())
 
-    def build(self):
-        """Build the watchlist UI component"""
-        with ui.column().classes('w-full'):
-            # Add Watchlist Header 
-            ui.label('Firm Watchlist').classes('text-2xl font-bold mb-4')
+def watchlist_card():
+    """Create a card component for the watchlist"""
+    watchlist = Watchlist()  # Instantiate the Watchlist class
+    with ui.card().classes("w-64 p-4 shadow-md"):
+        ui.label("Firm Watchlist").classes("text-lg font-semibold mb-2")
+        with ui.column().classes("w-full"):
             # Input for adding new tickers
-            with ui.row().classes('w-full items-center'):
-                ticker_input = ui.input('Add Ticker').classes('flex-grow')
-                ui.button('Add', on_click=lambda: self.add_ticker(ticker_input.value)).classes('ml-2')
-            
+            with ui.row().classes("w-full items-center"):
+                ticker_input = ui.input(placeholder="Add Ticker").classes("flex-grow")
+                ui.button(
+                    "Add",
+                    on_click=lambda: (watchlist.add_ticker(ticker_input.value), ticker_input.set_value(""))
+                ).classes("ml-2")
+
             # Watchlist display
-            with ui.column() as self.watchlist_container:
-                self.refresh_ui()
+            watchlist_container = ui.column().classes("w-full")
 
-    def refresh_ui(self):
-        """Refresh the watchlist display"""
-        if hasattr(self, 'watchlist_container'):
-            self.watchlist_container.clear()
-            with self.watchlist_container:
-                if not self.watchlist_items:
-                    ui.label('Watchlist is empty')
-                else:
-                    for item in self.watchlist_items:
-                        with ui.row().classes('w-full items-center'):
-                            ui.label(item['ticker']).classes('flex-grow')
-                            ui.button('Delete', 
-                                    on_click=lambda x=item['ticker']: self.delete_ticker(x),
-                                    color='red').classes('ml-2')
+            def refresh_ui():
+                """Refresh the watchlist display"""
+                watchlist_container.clear()
+                with watchlist_container:
+                    if not watchlist.watchlist_items:
+                        ui.label("Watchlist is empty").classes("text-gray-600 text-sm")
+                    else:
+                        for item in watchlist.watchlist_items:
+                            with ui.row().classes("w-full items-center"):
+                                ui.label(item["ticker"]).classes("flex-grow text-sm")
+                                ui.button(
+                                    "Delete",
+                                    on_click=lambda x=item["ticker"]: watchlist.delete_ticker(x),
+                                    color="red"
+                                ).classes("ml-2 text-xs")
 
-# Example usage
+            # Initial render and bind refresh to watchlist updates
+            refresh_ui()
+            watchlist.add_callback(refresh_ui)  # Sync callback for UI refresh
+
+    return watchlist  # Return the Watchlist instance for external use
+
+# Example usage (for standalone testing)
 if __name__ == "__main__":
-    watchlist = Watchlist()
-    watchlist.build()
+    watchlist_instance = watchlist_card()
     ui.run()

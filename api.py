@@ -1,15 +1,19 @@
 # api.py
-from fastapi import FastAPI
+from fastapi import FastAPI, Query
+from fastapi.staticfiles import StaticFiles
 import yfinance as yf
 from yfinance import EquityQuery
 import pymongo
 from dotenv import load_dotenv
 import os
 from datetime import datetime
-from watchlist import Watchlist
+from components.watchlist_card import Watchlist
 import logging
 
 app = FastAPI(debug=True)  # Enable debug mode
+
+# Mount static files
+app.mount("/static", StaticFiles(directory="static"), name="static")
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -22,7 +26,6 @@ client = pymongo.MongoClient(mongo_uri)
 db = client["trading_db"]
 collection_stock_prices = db["stock_prices"]
 collection_stock_info_details = db["stock_info_details"]
-
 
 @app.get("/get_stock_ohlcv_data")
 async def get_stock_ohlcv_data():
@@ -115,13 +118,25 @@ async def read_most_actives():
         raise
 
 @app.get("/small_cap_gainers")
-async def read_small_cap_gainers():
+async def read_small_cap_gainers(
+    fields: str = Query(None, description="Comma-separated list of fields to return (e.g., 'displayName,symbol')")
+):
     """Fetch raw day gainers data from Yahoo Finance using yf.screen('small_cap_gainers')"""
     try:
         # Fetch "Day Gainers" predefined screen directly from yfinance
         gainers_data = yf.screen("small_cap_gainers")
         
-        logger.info("Returning raw day small gap gainers data from Yahoo Finance")
+        # If fields parameter is provided, filter the response
+        if fields:
+            requested_fields = [field.strip() for field in fields.split(",")]
+            # Filter each quote to include only the requested fields
+            filtered_quotes = [
+                {key: quote[key] for key in requested_fields if key in quote}
+                for quote in gainers_data["quotes"]
+            ]
+            gainers_data["quotes"] = filtered_quotes
+        
+        logger.info("Returning raw day small cap gainers data from Yahoo Finance")
         return gainers_data
     
     except Exception as e:
@@ -129,7 +144,9 @@ async def read_small_cap_gainers():
         raise
 
 @app.get("/firm_gainers")
-async def read_firm_gainers():
+async def read_firm_gainers(
+    fields: str = Query(None, description="Comma-separated list of fields to return (e.g., 'displayName,symbol')")
+):
     """Fetch custom firm gainers data from Yahoo Finance using a custom EquityQuery"""
     try:
         # Define custom query for "firm_gainers"
@@ -142,9 +159,19 @@ async def read_firm_gainers():
         ])
         
         # Fetch data with the custom query, sorted by percent change descending
-        firm_gainers_data = yf.screen(q, sortField='percentchange', sortAsc=False)  # sortAsc=False for DESC
+        firm_gainers_data = yf.screen(q, sortField='percentchange', sortAsc=False)
         
-        logger.info("Returning raw firm gainers data from Yahoo Finance")
+        # If fields parameter is provided, filter the response
+        if fields:
+            requested_fields = [field.strip() for field in fields.split(",")]
+            # Filter each quote to include only the requested fields
+            filtered_quotes = [
+                {key: quote[key] for key in requested_fields if key in quote}
+                for quote in firm_gainers_data["quotes"]
+            ]
+            firm_gainers_data["quotes"] = filtered_quotes
+        
+        logger.info("Returning firm gainers data from Yahoo Finance")
         return firm_gainers_data
     
     except Exception as e:
