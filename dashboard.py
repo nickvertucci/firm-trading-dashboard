@@ -36,11 +36,10 @@ async def fetch_rvol_gainers():
 def create_dashboard():
     """Create the full dashboard page with sidebars, rVol table, and watchlist table"""
     # Left Sidebar
-    with ui.left_drawer(fixed=False).classes("bg-gray-100 p-4 w-64") as left_sidebar:
+    with ui.left_drawer(fixed=False).classes("bg-gray-100 p-4 w-75") as left_sidebar:
         firm_gainers_card()
         firm_rvol_gainers_card()
         small_cap_gainers_card()
-        most_active_card()
 
     # Right Sidebar
     with ui.right_drawer(fixed=False).classes("bg-gray-100 p-4 w-64") as right_sidebar:
@@ -65,7 +64,8 @@ def create_dashboard():
                             "symbol": quote.get("symbol", "N/A"),
                             "name": quote.get("displayName", quote.get("longName", "Unknown")),
                             "rvol": f"{quote.get('rvol', 'N/A'):.2f}%" if isinstance(quote.get("rvol"), (int, float)) else "N/A",
-                            "price": f"${quote.get('regularMarketPrice', 'N/A'):.2f}" if isinstance(quote.get("regularMarketPrice"), (int, float)) else "$N/A"
+                            "price": f"${quote.get('regularMarketPrice', 'N/A'):.2f}" if isinstance(quote.get("regularMarketPrice"), (int, float)) else "$N/A",
+                            "previous price": f"${quote.get('regularMarketPreviousClose', 'N/A'):.2f}" if isinstance(quote.get("regularMarketPreviousClose"), (int, float)) else "$N/A"
                         }
                         for quote in quotes
                     ]
@@ -74,7 +74,8 @@ def create_dashboard():
                             {"name": "symbol", "label": "Symbol", "field": "symbol", "align": "left"},
                             {"name": "name", "label": "Name", "field": "name", "align": "left"},
                             {"name": "rvol", "label": "rVol (%)", "field": "rvol", "align": "right"},
-                            {"name": "price", "label": "Price", "field": "price", "align": "right"}
+                            {"name": "price", "label": "Price", "field": "price", "align": "right"},
+                            {"name": "previous price", "label": "Previous Price", "field": "previous price", "align": "right"}
                         ],
                         rows=rows,
                         row_key="symbol"

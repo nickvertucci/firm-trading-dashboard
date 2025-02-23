@@ -51,7 +51,6 @@ def create_header():
             ui.button("Home", on_click=lambda: ui.navigate.to("/")).classes("bg-gray-600 hover:bg-gray-700 text-white px-4 py-2 rounded")
             ui.button("Dashboard", on_click=lambda: ui.navigate.to("/dashboard")).classes("bg-gray-600 hover:bg-gray-700 text-white px-4 py-2 rounded")
             ui.button("About", on_click=lambda: ui.notify("About page coming soon!")).classes("bg-gray-600 hover:bg-gray-700 text-white px-4 py-2 rounded")
-            ui.button("Settings", on_click=lambda: ui.notify("Settings page coming soon!")).classes("bg-gray-600 hover:bg-gray-700 text-white px-4 py-2 rounded")
 
 # Homepage at /
 @ui.page("/")
@@ -65,7 +64,6 @@ def home_page():
             with ui.column().classes("w-full"):
                 ui.button("Go to Dashboard", on_click=lambda: ui.navigate.to("/dashboard")).classes("w-full mb-2")
                 ui.button("About", on_click=lambda: ui.notify("About page coming soon!")).classes("w-full mb-2")
-                ui.button("Settings", on_click=lambda: ui.notify("Settings page coming soon!")).classes("w-full")
         ui.label("Powered by NiceGUI & xAI").classes("text-sm text-gray-500 mt-4 text-center")
 
 # Dashboard at /dashboard

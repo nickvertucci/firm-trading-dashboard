@@ -202,8 +202,8 @@ async def read_firm_rvol_gainers(
         q = EquityQuery('and', [
             EquityQuery('gt', ['percentchange', 3]),             # Gainers > 3%
             EquityQuery('eq', ['region', 'us']),                 # US region
-            EquityQuery('gte', ['intradaymarketcap', 20000000]), # Market cap >= 20M
-            EquityQuery('gte', ['intradayprice', 0.6]),          # Price >= $0.60
+            EquityQuery('gte', ['intradaymarketcap', 2000000]), # Market cap >= 2M
+            EquityQuery('gte', ['intradayprice', 1]),            # Price >= $1.00
             EquityQuery('gt', ['dayvolume', 15000])              # Volume > 15,000
         ])
         
