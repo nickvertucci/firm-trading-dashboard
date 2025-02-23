@@ -5,10 +5,7 @@ from api import app as api_app
 from dashboard import create_dashboard
 from workers.data_ohlcv_fetcher import DataOHLCVFetcher
 from workers.data_info_fetcher import DataInfoFetcher
-from components.watchlist_card import Watchlist, watchlist_card
-from components.mostActivelist_card import most_active_card
-from components.firmGainers_card import firm_gainers_card
-
+from components.watchlist_card import Watchlist
 import asyncio
 import logging
 
@@ -75,40 +72,19 @@ def home_page():
 @ui.page("/dashboard")
 async def dashboard_page():
     logger.info("Rendering dashboard page")
-    update_table_callback = None
-    
     try:
         create_header()
-        
-        # Left sidebar for Most Active
-        with ui.left_drawer(fixed=False).classes("bg-gray-100 p-4 w-64") as left_sidebar:
-            most_active_card()
-            firm_gainers_card()
-
-        # Right sidebar for Watchlist
-        with ui.right_drawer(fixed=False).classes("bg-gray-100 p-4 w-64") as right_sidebar:
-            watchlist = watchlist_card()
-
-        # Main content area with table
-        with ui.element("div").classes("w-full max-w-4xl mx-auto p-4"):
-            update_table_callback = create_dashboard(watchlist)  # Returns the callback function
-
-        # Assign callback to worker
-        if update_table_callback is not None:
+        update_table_callback = create_dashboard()  # Delegate all dashboard content to dashboard.py
+        if update_table_callback:
             data_fetcher.stock_data_worker.update_callback = update_table_callback
             logger.info("Assigned update_table_callback to OHLCV worker")
         else:
             logger.warning("update_table_callback is None, not assigned to worker")
-
-        # Toggle buttons for sidebars
-        ui.button("Toggle Most Active", on_click=left_sidebar.toggle).classes("fixed bottom-4 left-4 bg-gray-600 text-white px-4 py-2 rounded")
-        ui.button("Toggle Watchlist", on_click=right_sidebar.toggle).classes("fixed bottom-4 right-4 bg-gray-600 text-white px-4 py-2 rounded")
-    
+        return update_table_callback
     except Exception as e:
         logger.error(f"Error rendering dashboard: {e}")
         ui.notify(f"Error loading dashboard: {e}", type="error")
-    
-    return update_table_callback
+        return None
 
 # Initialize workers with Watchlist class as factory
 data_fetcher = DataOHLCVFetcher(Watchlist)
@@ -145,4 +121,4 @@ async def shutdown():
 
 if __name__ in {"__main__", "__mp_main__"}:
     logger.info("Starting NiceGUI app")
-    ui.run(host="0.0.0.0", port=8000, reload=True)
+    ui.run(host="0.0.0.0", port=8000, reload=True, title="Firm Trading Dashboard", favicon="static/favicon.ico")

@@ -17,6 +17,7 @@ python -m workers.data_ohlcv_fetcher
 FIRM-TRADING-DASHBOARD/
 ├── components/                  # UI card components
 │   ├── firmGainers_card.py      # Firm gainers card
+│   ├── firmRvolgainers_card.py  # Firm rVol gainers card
 │   ├── mostActivelist_card.py   # Most active stocks card
 │   ├── smallCapgainers_card.py  # Small-cap gainers card
 │   ├── watchlist_card.py        # Watchlist card
