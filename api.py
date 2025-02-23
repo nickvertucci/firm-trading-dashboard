@@ -9,6 +9,9 @@ import os
 from datetime import datetime
 from components.watchlist_card import Watchlist
 import logging
+from alpaca.trading.client import TradingClient
+from alpaca.data import StockHistoricalDataClient
+from alpaca.data.requests import StockLatestQuoteRequest
 
 app = FastAPI(debug=True)  # Enable debug mode
 
@@ -19,13 +22,22 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("API")
 
-# MongoDB connection setup (moved from data.py)
+##############################################################################################################################
+
+
+# MongoDB connection setup
 load_dotenv()
 mongo_uri = os.getenv("MONGO_URI")
 client = pymongo.MongoClient(mongo_uri)
 db = client["trading_db"]
 collection_stock_prices = db["stock_prices"]
 collection_stock_info_details = db["stock_info_details"]
+
+# Alpaca clients setup
+trading_client = TradingClient(os.getenv("ALPACA_API_KEY"), os.getenv("ALPACA_SECRET_KEY"), paper=True)
+data_client = StockHistoricalDataClient(os.getenv("ALPACA_API_KEY"), os.getenv("ALPACA_SECRET_KEY"))
+
+##############################################################################################################################
 
 @app.get("/get_stock_ohlcv_data")
 async def get_stock_ohlcv_data():

@@ -6,6 +6,9 @@
 - MongoDB
 - Asyncio
 
+# Activating Virtual Environment
+.venv\Scripts\activate  
+
 # Testing
 run the data_fetcher.py worker individually for testing
 python -m workers.data_ohlcv_fetcher
