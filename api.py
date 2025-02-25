@@ -41,27 +41,19 @@ data_client = StockHistoricalDataClient(os.getenv("ALPACA_API_KEY"), os.getenv("
 
 @app.get("/get_stock_ohlcv_data")
 async def get_stock_ohlcv_data():
-    """Fetch OHLCV stock data from MongoDB for watchlist tickers"""
     try:
-        # Initialize watchlist
         watchlist = Watchlist()
         tickers = [item["ticker"] for item in watchlist.watchlist_items]
-        
-        if not tickers:  # If watchlist is empty, return empty list
+        if not tickers:
             logger.info("No tickers in watchlist, returning empty result")
             return []
         
-        # Fetch all data for today from MongoDB for watchlist tickers
-        today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
-
-        query_filter = {
-            "timestamp": {"$gte": today},
-            "ticker": {"$in": tickers}
-        }
-                
-        cursor = collection_stock_prices.find(query_filter).sort("timestamp", pymongo.ASCENDING)
-        
-        result = [{k: v for k, v in doc.items() if k != "_id"} for doc in cursor]
+        # Fetch latest data for each ticker, no time restriction
+        result = []
+        for ticker in tickers:
+            doc = collection_stock_prices.find_one({"ticker": ticker}, sort=[("timestamp", pymongo.DESCENDING)])
+            if doc:
+                result.append({k: v for k, v in doc.items() if k != "_id"})
         
         logger.info(f"Returning {len(result)} OHLCV records for {len(tickers)} tickers")
         return result
@@ -196,23 +188,25 @@ async def read_firm_rvol_gainers(
     offset: int = Query(0, ge=0, description="Starting index of results"),
     size: int = Query(25, ge=1, le=100, description="Number of results to return")
 ):
-    """Fetch firm gainers sorted by relative volume (regularMarketVolume / averageDailyVolume10Day)"""
+    """Fetch firm gainers sorted by relative volume (regularMarketVolume / averageDailyVolume10Day), excluding ASE and PNK exchanges"""
     try:
         # Define custom query for "firm_rvol_gainers" (base filters from firm_gainers)
         q = EquityQuery('and', [
-            EquityQuery('gt', ['percentchange', 3]),             # Gainers > 3%
-            EquityQuery('eq', ['region', 'us']),                 # US region
-            EquityQuery('gte', ['intradaymarketcap', 2000000]), # Market cap >= 2M
-            EquityQuery('gte', ['intradayprice', 1]),            # Price >= $1.00
-            EquityQuery('gt', ['dayvolume', 15000])              # Volume > 15,000
+            EquityQuery('gt', ['percentchange', 3]),                # Gainers > 3%
+            EquityQuery('eq', ['region', 'us']),                    # US region
+            EquityQuery('gte', ['intradaymarketcap', 2000000]),     # Market cap >= 2M
+            EquityQuery('gte', ['intradayprice', 2]),               # Price >= $2.00
+            EquityQuery('lte', ['intradayprice', 18]),              # Price <= $18.00
+            EquityQuery('gt', ['dayvolume', 15000])                 # Volume > 15,000
         ])
         
         # Fetch data with a larger initial size to allow sorting and pagination
-        # Use a reasonable max fetch size (e.g., 250) since Yahoo might cap results
         firm_data = yf.screen(q, sortField='percentchange', sortAsc=False, size=250)
+
+        # Filter out ASE and PNK exchanges
+        quotes = [quote for quote in firm_data["quotes"] if quote.get("exchange") not in ["ASE", "PNK"]]
         
-        # Calculate relative volume and add it to each quote
-        quotes = firm_data["quotes"]
+        # Calculate relative volume and add it to each quote (using the filtered quotes)
         for quote in quotes:
             regular_volume = quote.get("regularMarketVolume", 0)
             avg_volume = quote.get("averageDailyVolume10Day", 1)  # Avoid division by zero

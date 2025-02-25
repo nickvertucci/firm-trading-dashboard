@@ -84,6 +84,7 @@ def create_dashboard():
         ui.timer(60.0, update_rvol_table)
 
         # Watchlist Table Below
+        ui.label("Watchlist Tickers").classes("text-2xl font-bold mb-4")
         table = ui.column().classes("w-full")
         async def update_table():
             stocks_data = await fetch_stocks()
