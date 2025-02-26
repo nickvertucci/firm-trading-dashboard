@@ -3,6 +3,7 @@ from nicegui import ui
 import httpx
 from datetime import datetime
 from components.watchlist_card import watchlist_card
+from components.watchlist_chart_card import watchlist_chart_card
 from components.mostActivelist_card import most_active_card
 from components.smallCapgainers_card import small_cap_gainers_card
 from components.firmGainers_card import firm_gainers_card
@@ -34,7 +35,7 @@ async def fetch_rvol_gainers():
             return {"quotes": []}
 
 def create_dashboard():
-    """Create the full dashboard page with sidebars, rVol table, and watchlist table"""
+    """Create the full dashboard page with sidebars, rVol table, watchlist table, and charts"""
     # Left Sidebar
     with ui.left_drawer(fixed=False).classes("bg-gray-100 p-4 w-75") as left_sidebar:
         firm_gainers_card()
@@ -83,9 +84,9 @@ def create_dashboard():
         ui.timer(0.1, update_rvol_table, once=True)
         ui.timer(60.0, update_rvol_table)
 
-        # Watchlist Table Below
+        # Watchlist Table
         ui.label("Watchlist Tickers").classes("text-2xl font-bold mb-4")
-        table = ui.column().classes("w-full")
+        table = ui.column().classes("w-full mb-6")  # Added mb-6 for spacing
         async def update_table():
             stocks_data = await fetch_stocks()
             if not stocks_data or not watchlist.watchlist_items:
@@ -131,6 +132,9 @@ def create_dashboard():
         
         watchlist.add_callback(update_table)
         ui.timer(0.1, update_table, once=True)
+
+        # Watchlist Charts
+        watchlist_chart_card(watchlist)
 
     # Sidebar Toggle Buttons
     ui.button("Toggle Left Sidebar", on_click=left_sidebar.toggle).classes("fixed bottom-4 left-4 bg-gray-600 text-white px-4 py-2 rounded")
