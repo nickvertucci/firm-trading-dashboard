@@ -6,4 +6,9 @@ dotenv
 pymongo
 yfinance
 alpaca-py
+<<<<<<< Updated upstream
 tqdm
+=======
+plotly
+apscheduler
+>>>>>>> Stashed changes

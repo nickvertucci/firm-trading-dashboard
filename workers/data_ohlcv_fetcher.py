@@ -4,11 +4,55 @@ import aiohttp
 import pandas as pd
 import yfinance as yf
 import pytz
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date, timezone
 import pymongo
 from typing import List, Dict, Optional
 from dotenv import load_dotenv
 import os
+import logging
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+import time
+from alpaca.trading.client import TradingClient
+from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
+from alpaca.data.historical.corporate_actions import CorporateActionsClient
+from alpaca.data.historical.stock import StockHistoricalDataClient
+from alpaca.trading.stream import TradingStream
+from alpaca.data.live.stock import StockDataStream
+
+from alpaca.data.requests import (
+    CorporateActionsRequest,
+    StockBarsRequest,
+    StockQuotesRequest,
+    StockTradesRequest,
+)
+from alpaca.trading.requests import (
+    ClosePositionRequest,
+    GetAssetsRequest,
+    GetOrdersRequest,
+    LimitOrderRequest,
+    MarketOrderRequest,
+    StopLimitOrderRequest,
+    StopLossRequest,
+    StopOrderRequest,
+    TakeProfitRequest,
+    TrailingStopOrderRequest,
+)
+from alpaca.trading.enums import (
+    AssetExchange,
+    AssetStatus,
+    OrderClass,
+    OrderSide,
+    OrderType,
+    QueryOrderStatus,
+    TimeInForce,
+)
+
+# setup clients
+trade_client = TradingClient(api_key=os.getenv("ALPACA_API_KEY"), secret_key=os.getenv("ALPACA_SECRET_KEY"), paper=True)
+
+# Set up logging
+logging.basicConfig(level=logging.DEBUG)
+logger = logging.getLogger(__name__)
 
 # Initialize MongoDB connection
 load_dotenv()
@@ -27,6 +71,7 @@ class StockDataWorker:
         self.watchlist_factory = watchlist_factory
         self.collection = collection
         self.update_callback = update_callback  # Callback to notify dashboard
+        self.retry_delay = 60  # Seconds to wait on rate limit or API errors
 
     async def get_tickers(self) -> List[str]:
         loop = asyncio.get_event_loop()
@@ -38,25 +83,52 @@ class StockDataWorker:
         loop = asyncio.get_event_loop()
         doc = await loop.run_in_executor(None, lambda: self.collection.find_one({"ticker": ticker}, sort=[("timestamp", -1)]))
         if doc and "timestamp" in doc:
-            dt = datetime.fromisoformat(doc["timestamp"])
-            return pytz.UTC.localize(dt) if dt.tzinfo is None else dt
+            try:
+                # Handle the timestamp format "2025-02-27T20:59:00+00:00Z" by removing 'Z' and parsing
+                timestamp_str = doc["timestamp"].rstrip("Z")
+                dt = datetime.fromisoformat(timestamp_str)
+                if dt.tzinfo is None:
+                    dt = pytz.UTC.localize(dt)  # Ensure UTC if no timezone
+                return dt
+            except ValueError as e:
+                logger.error(f"Invalid timestamp format for {ticker}: {doc['timestamp']}, error: {e}")
+                return None
         return None
 
     async def fetch_yahoo_data(self, tickers: str | List[str], start=None, end=None, interval="1m") -> pd.DataFrame:
         loop = asyncio.get_event_loop()
-        try:
-            if start is None and end is None:
-                data = await loop.run_in_executor(None, lambda: yf.download(
-                    tickers, period="2d", interval=interval, auto_adjust=False, threads=True, progress=False
-                ))
-            else:
+        max_retries = 3
+        retry_count = 0
+
+        while retry_count < max_retries:
+            try:
+                today = date.today()  # Feb 27, 2025
+                if start is None and end is None:
+                    start = datetime(today.year, today.month, today.day, tzinfo=timezone.utc)
+                    end = datetime.now(tz=timezone.utc)
+                    logger.debug(f"Fetching real-time data for {tickers} from {start} to {end}")
+
                 data = await loop.run_in_executor(None, lambda: yf.download(
                     tickers, start=start, end=end, interval=interval, auto_adjust=False, threads=True, progress=False
                 ))
-            return data
-        except Exception as e:
-            print(f"Error fetching Yahoo data: {e}")
-            return pd.DataFrame()
+                if not data.empty:
+                    return data
+                else:
+                    logger.warning(f"No data available for {tickers} at {datetime.now(pytz.UTC).isoformat()}")
+                    await asyncio.sleep(1)  # Short delay before retry
+                    retry_count += 1
+                    continue
+            except Exception as e:
+                logger.error(f"Error fetching Yahoo data for {tickers}: {e}")
+                if "rate limit" in str(e).lower() or "429" in str(e):
+                    logger.warning(f"Rate limit hit for {tickers}, retrying in {self.retry_delay} seconds")
+                    await asyncio.sleep(self.retry_delay)
+                    retry_count += 1
+                    continue
+                return pd.DataFrame()  # Return empty on non-rate-limit errors
+
+        logger.error(f"Max retries reached for {tickers}, no data fetched")
+        return pd.DataFrame()
 
     async def process_ohlc_data(self, ticker: str, data: pd.DataFrame, multi_ticker: bool = True) -> int:
         if data.empty:
@@ -80,7 +152,7 @@ class StockDataWorker:
                 volume = int(volume) if pd.notna(volume) else 0
 
                 doc = {
-                    "timestamp": timestamp.isoformat(),
+                    "timestamp": timestamp.isoformat() + "Z",
                     "ticker": ticker,
                     "open": round(float(ohlc[0]), 2),
                     "high": round(float(ohlc[1]), 2),
@@ -104,53 +176,14 @@ class StockDataWorker:
             return len(records)
         return 0
 
-    async def needs_historical_backfill(self, ticker: str) -> bool:
-        latest = await self.get_latest_timestamp(ticker)
-        now = datetime.now(pytz.UTC)
-        yesterday_end = now.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(seconds=1)
-        return not latest or latest < yesterday_end
-
-    async def backfill_historical(self, ticker: str) -> None:
-        if not await self.needs_historical_backfill(ticker):
-            return
-
-        latest = await self.get_latest_timestamp(ticker)
-        now = datetime.now(pytz.UTC)
-        yesterday_end = now.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(seconds=1)
-        start = latest or (now - timedelta(days=7))
-
-        data = await self.fetch_yahoo_data(ticker, start, yesterday_end)
-        if not data.empty:
-            count = await self.process_ohlc_data(ticker, data, multi_ticker=False)
-            print(f"Backfilled {count} historical records for {ticker}")
-            if self.update_callback and count > 0:
-                await self.update_callback()
-
-    async def needs_today_backfill(self, ticker: str) -> bool:
-        now = datetime.now(pytz.UTC)
-        today_start = now.astimezone(self.eastern).replace(hour=9, minute=30, second=0, microsecond=0).astimezone(pytz.UTC)
-        if now < today_start:
-            return False
-        latest = await self.get_latest_timestamp(ticker)
-        return not latest or latest < today_start
-
-    async def backfill_today(self, ticker: str) -> None:
-        if not await self.needs_today_backfill(ticker):
-            return
-
-        now = datetime.now(pytz.UTC)
-        today_start = now.astimezone(self.eastern).replace(hour=9, minute=30, second=0, microsecond=0).astimezone(pytz.UTC)
-        data = await self.fetch_yahoo_data(ticker, today_start.date(), now.date() + timedelta(days=1))
-        if not data.empty:
-            count = await self.process_ohlc_data(ticker, data, multi_ticker=False)
-            print(f"Backfilled {count} records for {ticker} today")
-            if self.update_callback and count > 0:
-                await self.update_callback()
-
     async def update_current(self, tickers: List[str]) -> int:
-        data = await self.fetch_yahoo_data(tickers)
+        today = date.today()  # Feb 27, 2025
+        start = datetime(today.year, today.month, today.day, tzinfo=timezone.utc)
+        now = datetime.now(pytz.UTC)
+
+        data = await self.fetch_yahoo_data(tickers, start, now)
         if data.empty:
-            print(f"No current data available for {tickers}")
+            logger.warning(f"No current data available for {tickers} on {today}")
             return 0
 
         total = 0
@@ -160,38 +193,42 @@ class StockDataWorker:
         total = sum(results)
         if self.update_callback and total > 0:
             await self.update_callback()
+        logger.info(f"Updated {total} real-time records for {tickers} on {today}")
         return total
 
     async def run(self) -> None:
         if self.running:
-            print("StockOHLCVFetcher Worker already running, skipping new instance")
+            logger.info("StockOHLCVFetcher Worker already running, skipping new instance")
             return
 
         self.running = True
-        print(f"StockOHLCVFetcher Worker started at {datetime.now(pytz.UTC).isoformat()}")
+        logger.info(f"StockOHLCVFetcher Worker started at {datetime.now(pytz.UTC).isoformat()}")
 
-        while self.running:
-            try:
-                tickers = await self.get_tickers()
-                if not tickers:
-                    print("No tickers found in watchlist")
-                    await asyncio.sleep(60)
-                    continue
+        # Use AsyncIOScheduler for scheduling every minute, 24/7
+        async def scheduled_update():
+            tickers = await self.get_tickers()
+            if tickers:
+                await self.update_current(tickers)
 
-                print(f"Processing tickers: {tickers}")
-                backfill_tasks = [
-                    asyncio.gather(self.backfill_historical(ticker), self.backfill_today(ticker))
-                    for ticker in tickers
-                ]
-                await asyncio.gather(*backfill_tasks)
+        scheduler = AsyncIOScheduler()
+        scheduler.add_job(scheduled_update, 'interval', minutes=1)
+        scheduler.start()
 
-                count = await self.update_current(tickers)
-                print(f"Updated {count} records at {datetime.now(pytz.UTC).isoformat()}")
+        try:
+            # Initial update to fetch today’s data
+            tickers = await self.get_tickers()
+            if tickers:
+                await self.update_current(tickers)
 
-            except Exception as e:
-                print(f"Worker error: {e}")
-
-            await asyncio.sleep(60)
+            # Keep the script running
+            while self.running:
+                await asyncio.sleep(60)  # Keep the loop alive, scheduler handles timing
+        except Exception as e:
+            logger.error(f"Worker error: {e}")
+        finally:
+            scheduler.shutdown()
+            self.running = False
+            logger.info("StockOHLCVFetcher Worker stopped")
 
 class DataOHLCVFetcher:
     def __init__(self, watchlist_factory, update_callback=None):
@@ -207,7 +244,7 @@ class DataOHLCVFetcher:
 
 # Example usage (for testing)
 async def main():
-    from watchlist import Watchlist
+    from components.watchlist_card import Watchlist
     fetcher = DataOHLCVFetcher(Watchlist)
     await fetcher.start()
 

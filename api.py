@@ -6,7 +6,7 @@ from yfinance import EquityQuery
 import pymongo
 from dotenv import load_dotenv
 import os
-from datetime import datetime
+from datetime import datetime, date
 from components.watchlist_card import Watchlist
 import logging
 from alpaca.trading.client import TradingClient
@@ -45,7 +45,6 @@ async def get_stock_ohlcv_data():
         watchlist = Watchlist()
         tickers = [item["ticker"] for item in watchlist.watchlist_items]
         if not tickers:
-            logger.info("No tickers in watchlist, returning empty result")
             return []
         
         # Fetch latest data for each ticker, no time restriction
@@ -55,11 +54,34 @@ async def get_stock_ohlcv_data():
             if doc:
                 result.append({k: v for k, v in doc.items() if k != "_id"})
         
-        logger.info(f"Returning {len(result)} OHLCV records for {len(tickers)} tickers")
         return result
     
     except Exception as e:
-        logger.error(f"API Error in /get_stock_ohlcv_data: {str(e)}", exc_info=True)
+        raise
+
+# api.py (updated for debugging)
+@app.get("/get_stock_ohlcv_intraday")
+async def get_stock_ohlcv_intraday():
+    try:
+        watchlist = Watchlist()
+        tickers = [item["ticker"] for item in watchlist.watchlist_items]
+        if not tickers:
+            return []
+
+        # Fetch all data for the current day (Feb 27, 2025)
+        today = date.today()
+        start_of_day = datetime(today.year, today.month, today.day)
+        result = []
+        for ticker in tickers:
+            docs = list(collection_stock_prices.find({
+                "ticker": ticker,
+                "timestamp": {"$gte": start_of_day}
+            }).sort("timestamp", pymongo.ASCENDING))
+            result.extend([{k: v for k, v in doc.items() if k != "_id"} for doc in docs])
+        
+        return result
+    
+    except Exception as e:
         raise
 
 @app.get("/get_stock_info_data")
@@ -71,7 +93,6 @@ async def get_stock_info_data():
         tickers = [item["ticker"] for item in watchlist.watchlist_items]
         
         if not tickers:  # If watchlist is empty, return empty list
-            logger.info("No tickers in watchlist, returning empty result")
             return []
         
         # Fetch all data for today from MongoDB for watchlist tickers
@@ -86,11 +107,9 @@ async def get_stock_info_data():
         
         result = [{k: v for k, v in doc.items() if k != "_id"} for doc in cursor]
         
-        logger.info(f"Returning {len(result)} INFO records for {len(tickers)} tickers")
         return result
     
     except Exception as e:
-        logger.error(f"API Error in /get_stock_info_data: {str(e)}", exc_info=True)
         raise
 
 @app.get("/gainers")
@@ -100,11 +119,9 @@ async def read_day_gainers():
         # Fetch "Day Gainers" predefined screen directly from yfinance
         gainers_data = yf.screen("day_gainers", size=100)
         
-        logger.info("Returning raw day gainers data from Yahoo Finance")
         return gainers_data
     
     except Exception as e:
-        logger.error(f"API Error in /gainers: {str(e)}", exc_info=True)
         raise
 
 @app.get("/most_actives")
@@ -114,11 +131,9 @@ async def read_most_actives():
         # Fetch "Day Gainers" predefined screen directly from yfinance
         gainers_data = yf.screen("most_actives", size=100)
         
-        logger.info("Returning raw day most actives data from Yahoo Finance")
         return gainers_data
     
     except Exception as e:
-        logger.error(f"API Error in /most_actives: {str(e)}", exc_info=True)
         raise
 
 @app.get("/small_cap_gainers")
@@ -140,11 +155,9 @@ async def read_small_cap_gainers(
             ]
             gainers_data["quotes"] = filtered_quotes
         
-        logger.info("Returning raw day small cap gainers data from Yahoo Finance")
         return gainers_data
     
     except Exception as e:
-        logger.error(f"API Error in /small_cap_gainers: {str(e)}", exc_info=True)
         raise
 
 @app.get("/firm_gainers")
@@ -175,11 +188,9 @@ async def read_firm_gainers(
             ]
             firm_gainers_data["quotes"] = filtered_quotes
         
-        logger.info("Returning firm gainers data from Yahoo Finance")
         return firm_gainers_data
     
     except Exception as e:
-        logger.error(f"API Error in /firm_gainers: {str(e)}", exc_info=True)
         raise
 
 @app.get("/firm_rvol_gainers")
@@ -239,11 +250,9 @@ async def read_firm_rvol_gainers(
             "next_offset": offset + size if offset + size < len(sorted_quotes) else None
         }
         
-        logger.info(f"Returning firm rVol gainers: offset={offset}, size={size}, total={len(sorted_quotes)}")
         return response
     
     except Exception as e:
-        logger.error(f"API Error in /firm_rvol_gainers: {str(e)}", exc_info=True)
         raise
 
 if __name__ == "__main__":

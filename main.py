@@ -55,7 +55,6 @@ def create_header():
 # Homepage at /
 @ui.page("/")
 def home_page():
-    logger.info("Rendering home page")
     create_header()
     with ui.column().classes("w-full max-w-2xl mx-auto p-4"):
         ui.label("Welcome to Your Trading Dashboard").classes("text-3xl font-bold text-center mb-6")
@@ -69,18 +68,13 @@ def home_page():
 # Dashboard at /dashboard
 @ui.page("/dashboard")
 async def dashboard_page():
-    logger.info("Rendering dashboard page")
     try:
         create_header()
         update_table_callback = create_dashboard()  # Delegate all dashboard content to dashboard.py
         if update_table_callback:
             data_fetcher.stock_data_worker.update_callback = update_table_callback
-            logger.info("Assigned update_table_callback to OHLCV worker")
-        else:
-            logger.warning("update_table_callback is None, not assigned to worker")
         return update_table_callback
     except Exception as e:
-        logger.error(f"Error rendering dashboard: {e}")
         ui.notify(f"Error loading dashboard: {e}", type="error")
         return None
 
@@ -95,18 +89,15 @@ info_task = None
 @nicegui_app.on_startup
 async def startup():
     global price_task, info_task
-    logger.info("Starting application")
     try:
         price_task = asyncio.create_task(data_fetcher.start())
         info_task = asyncio.create_task(info_fetcher.start())
-        logger.info("Workers scheduled to start")
     except Exception as e:
         logger.error(f"Error starting workers: {e}")
 
 @nicegui_app.on_shutdown
 async def shutdown():
     global price_task, info_task
-    logger.info("Shutting down application")
     try:
         if price_task:
             price_task.cancel()
