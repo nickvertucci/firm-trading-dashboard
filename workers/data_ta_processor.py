@@ -10,6 +10,7 @@ import pymongo
 from alpaca.trading.client import TradingClient
 from alpaca.data.historical.stock import StockHistoricalDataClient
 from alpaca.data.requests import StockBarsRequest, StockSnapshotRequest
+from alpaca.data.enums import DataFeed
 from alpaca.trading.requests import GetAssetsRequest
 from alpaca.trading.enums import AssetExchange, AssetStatus
 from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
@@ -154,7 +155,7 @@ class TAScanner:
             active_assets = await self.get_active_assets()
             self.symbols = [asset['symbol'] for asset in active_assets]
 
-        request = StockSnapshotRequest(symbol_or_symbols=self.symbols)
+        request = StockSnapshotRequest(symbol_or_symbols=self.symbols, feed=DataFeed.IEX)
         snapshots = self.stock_historical_data_client.get_stock_snapshot(request)
         
         results = []
