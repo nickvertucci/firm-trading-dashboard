@@ -6,3 +6,4 @@ dotenv
 pymongo
 yfinance
 alpaca-py
+tqdm
