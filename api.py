@@ -13,7 +13,7 @@ from alpaca.trading.client import TradingClient
 from alpaca.data import StockHistoricalDataClient
 from alpaca.data.requests import StockLatestQuoteRequest
 
-app = FastAPI(debug=True)  # Enable debug mode
+app = FastAPI(debug=True)
 
 # Mount static files
 app.mount("/static", StaticFiles(directory="static"), name="static")
@@ -22,9 +22,6 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("API")
 
-##############################################################################################################################
-
-
 # MongoDB connection setup
 load_dotenv()
 mongo_uri = os.getenv("MONGO_URI")
@@ -32,6 +29,7 @@ client = pymongo.MongoClient(mongo_uri)
 db = client["trading_db"]
 collection_stock_prices = db["stock_prices"]
 collection_stock_info_details = db["stock_info_details"]
+collection_stock_ta = db["stock_ta"]
 
 # Alpaca clients setup
 trading_client = TradingClient(os.getenv("ALPACA_API_KEY"), os.getenv("ALPACA_SECRET_KEY"), paper=True)
@@ -47,7 +45,6 @@ async def get_stock_ohlcv_data():
         if not tickers:
             return []
         
-        # Fetch latest data for each ticker, no time restriction
         result = []
         for ticker in tickers:
             doc = collection_stock_prices.find_one({"ticker": ticker}, sort=[("timestamp", pymongo.DESCENDING)])
@@ -59,7 +56,6 @@ async def get_stock_ohlcv_data():
     except Exception as e:
         raise
 
-# api.py (updated for debugging)
 @app.get("/get_stock_ohlcv_intraday")
 async def get_stock_ohlcv_intraday():
     try:
@@ -68,7 +64,6 @@ async def get_stock_ohlcv_intraday():
         if not tickers:
             return []
 
-        # Fetch all data for the current day (Feb 27, 2025)
         today = date.today()
         start_of_day = datetime(today.year, today.month, today.day)
         result = []
@@ -86,25 +81,20 @@ async def get_stock_ohlcv_intraday():
 
 @app.get("/get_stock_info_data")
 async def get_stock_info_data():
-    """Fetch INFO stock data from MongoDB for watchlist tickers"""
     try:
-        # Initialize watchlist
         watchlist = Watchlist()
         tickers = [item["ticker"] for item in watchlist.watchlist_items]
         
-        if not tickers:  # If watchlist is empty, return empty list
+        if not tickers:
             return []
         
-        # Fetch all data for today from MongoDB for watchlist tickers
         today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
-
         query_filter = {
             "timestamp": {"$gte": today},
             "ticker": {"$in": tickers}
         }
                 
         cursor = collection_stock_info_details.find(query_filter).sort("timestamp", pymongo.ASCENDING)
-        
         result = [{k: v for k, v in doc.items() if k != "_id"} for doc in cursor]
         
         return result
@@ -114,25 +104,17 @@ async def get_stock_info_data():
 
 @app.get("/gainers")
 async def read_day_gainers():
-    """Fetch raw day gainers data from Yahoo Finance using yf.screen('day_gainers')"""
     try:
-        # Fetch "Day Gainers" predefined screen directly from yfinance
         gainers_data = yf.screen("day_gainers", size=100)
-        
         return gainers_data
-    
     except Exception as e:
         raise
 
 @app.get("/most_actives")
 async def read_most_actives():
-    """Fetch raw day gainers data from Yahoo Finance using yf.screen('most_actives')"""
     try:
-        # Fetch "Day Gainers" predefined screen directly from yfinance
         gainers_data = yf.screen("most_actives", size=100)
-        
         return gainers_data
-    
     except Exception as e:
         raise
 
@@ -140,23 +122,16 @@ async def read_most_actives():
 async def read_small_cap_gainers(
     fields: str = Query(None, description="Comma-separated list of fields to return (e.g., 'displayName,symbol')")
 ):
-    """Fetch raw day gainers data from Yahoo Finance using yf.screen('small_cap_gainers')"""
     try:
-        # Fetch "Day Gainers" predefined screen directly from yfinance
         gainers_data = yf.screen("small_cap_gainers", size=100)
-        
-        # If fields parameter is provided, filter the response
         if fields:
             requested_fields = [field.strip() for field in fields.split(",")]
-            # Filter each quote to include only the requested fields
             filtered_quotes = [
                 {key: quote[key] for key in requested_fields if key in quote}
                 for quote in gainers_data["quotes"]
             ]
             gainers_data["quotes"] = filtered_quotes
-        
         return gainers_data
-    
     except Exception as e:
         raise
 
@@ -164,32 +139,23 @@ async def read_small_cap_gainers(
 async def read_firm_gainers(
     fields: str = Query(None, description="Comma-separated list of fields to return (e.g., 'displayName,symbol')")
 ):
-    """Fetch custom firm gainers data from Yahoo Finance using a custom EquityQuery"""
     try:
-        # Define custom query for "firm_gainers"
         q = EquityQuery('and', [
             EquityQuery('gt', ['percentchange', 3]),
             EquityQuery('eq', ['region', 'us']),
-            EquityQuery('gte', ['intradaymarketcap', 20000000]),  # 20M market cap
-            EquityQuery('gte', ['intradayprice', 0.6]),           # Price >= $0.60
-            EquityQuery('gt', ['dayvolume', 15000])               # Volume > 15,000
+            EquityQuery('gte', ['intradaymarketcap', 20000000]),
+            EquityQuery('gte', ['intradayprice', 0.6]),
+            EquityQuery('gt', ['dayvolume', 15000])
         ])
-        
-        # Fetch data with the custom query, sorted by percent change descending
         firm_gainers_data = yf.screen(q, sortField='percentchange', sortAsc=False, size=100)
-        
-        # If fields parameter is provided, filter the response
         if fields:
             requested_fields = [field.strip() for field in fields.split(",")]
-            # Filter each quote to include only the requested fields
             filtered_quotes = [
                 {key: quote[key] for key in requested_fields if key in quote}
                 for quote in firm_gainers_data["quotes"]
             ]
             firm_gainers_data["quotes"] = filtered_quotes
-        
         return firm_gainers_data
-    
     except Exception as e:
         raise
 
@@ -199,38 +165,24 @@ async def read_firm_rvol_gainers(
     offset: int = Query(0, ge=0, description="Starting index of results"),
     size: int = Query(25, ge=1, le=100, description="Number of results to return")
 ):
-    """Fetch firm gainers sorted by relative volume (regularMarketVolume / averageDailyVolume10Day), excluding ASE and PNK exchanges"""
     try:
-        # Define custom query for "firm_rvol_gainers" (base filters from firm_gainers)
         q = EquityQuery('and', [
-            EquityQuery('gt', ['percentchange', 3]),                # Gainers > 3%
-            EquityQuery('eq', ['region', 'us']),                    # US region
-            EquityQuery('gte', ['intradaymarketcap', 2000000]),     # Market cap >= 2M
-            EquityQuery('gte', ['intradayprice', 2]),               # Price >= $2.00
-            EquityQuery('lte', ['intradayprice', 18]),              # Price <= $18.00
-            EquityQuery('gt', ['dayvolume', 15000])                 # Volume > 15,000
+            EquityQuery('gt', ['percentchange', 3]),
+            EquityQuery('eq', ['region', 'us']),
+            EquityQuery('gte', ['intradaymarketcap', 2000000]),
+            EquityQuery('gte', ['intradayprice', 2]),
+            EquityQuery('lte', ['intradayprice', 18]),
+            EquityQuery('gt', ['dayvolume', 15000])
         ])
-        
-        # Fetch data with a larger initial size to allow sorting and pagination
         firm_data = yf.screen(q, sortField='percentchange', sortAsc=False, size=250)
-
-        # Filter out ASE and PNK exchanges
         quotes = [quote for quote in firm_data["quotes"] if quote.get("exchange") not in ["ASE", "PNK"]]
-        
-        # Calculate relative volume and add it to each quote (using the filtered quotes)
         for quote in quotes:
             regular_volume = quote.get("regularMarketVolume", 0)
-            avg_volume = quote.get("averageDailyVolume10Day", 1)  # Avoid division by zero
+            avg_volume = quote.get("averageDailyVolume10Day", 1)
             rvol = (regular_volume / avg_volume) * 100 if avg_volume > 0 else 0
-            quote["rvol"] = rvol  # Add relative volume as a percentage
-        
-        # Sort by relative volume descending
+            quote["rvol"] = rvol
         sorted_quotes = sorted(quotes, key=lambda x: x["rvol"], reverse=True)
-        
-        # Apply pagination
         paginated_quotes = sorted_quotes[offset:offset + size]
-        
-        # Filter fields if specified
         if fields:
             requested_fields = [field.strip() for field in fields.split(",")]
             filtered_quotes = [
@@ -238,21 +190,74 @@ async def read_firm_rvol_gainers(
                 for quote in paginated_quotes
             ]
             paginated_quotes = filtered_quotes
-        
-        # Construct response with pagination metadata
         response = {
             "start": offset,
             "count": len(paginated_quotes),
-            "total": len(sorted_quotes),  # Total after filtering and sorting
+            "total": len(sorted_quotes),
             "quotes": paginated_quotes,
             "offset": offset,
             "size": size,
             "next_offset": offset + size if offset + size < len(sorted_quotes) else None
         }
-        
         return response
-    
     except Exception as e:
+        raise
+
+@app.get("/get_ta_data")
+async def get_ta_data(
+    scanner_type: str = Query(None, description="Filter by scanner type (e.g., 'ema_crossover', 'relative_volume')"),
+    start_date: str = Query(None, description="Start date in YYYY-MM-DD format"),
+    end_date: str = Query(None, description="End date in YYYY-MM-DD format"),
+    offset: int = Query(0, ge=0, description="Starting index of results"),
+    limit: int = Query(50, ge=1, le=1000, description="Number of results to return")
+):
+    """Fetch technical analysis data from MongoDB"""
+    try:
+        # Build query filter
+        query_filter = {}
+        
+        if scanner_type:
+            query_filter["scanner_type"] = scanner_type
+        
+        if start_date:
+            try:
+                start_dt = datetime.strptime(start_date, "%Y-%m-%d")
+                query_filter["timestamp"] = {"$gte": start_dt}
+            except ValueError:
+                return {"error": "Invalid start_date format. Use YYYY-MM-DD"}
+
+        if end_date:
+            try:
+                end_dt = datetime.strptime(end_date, "%Y-%m-%d").replace(hour=23, minute=59, second=59)
+                if "timestamp" in query_filter:
+                    query_filter["timestamp"]["$lte"] = end_dt
+                else:
+                    query_filter["timestamp"] = {"$lte": end_dt}
+            except ValueError:
+                return {"error": "Invalid end_date format. Use YYYY-MM-DD"}
+
+        # Fetch total count for pagination
+        total = collection_stock_ta.count_documents(query_filter)
+
+        # Fetch paginated data
+        cursor = collection_stock_ta.find(query_filter).sort("timestamp", pymongo.DESCENDING).skip(offset).limit(limit)
+        results = [{k: v for k, v in doc.items() if k != "_id"} for doc in cursor]
+
+        # Construct response
+        response = {
+            "total": total,
+            "count": len(results),
+            "offset": offset,
+            "limit": limit,
+            "next_offset": offset + limit if offset + limit < total else None,
+            "data": results
+        }
+
+        logger.info(f"Fetched {len(results)} TA records for scanner_type={scanner_type}, offset={offset}, limit={limit}")
+        return response
+
+    except Exception as e:
+        logger.error(f"Error in get_ta_data: {str(e)}")
         raise
 
 if __name__ == "__main__":
