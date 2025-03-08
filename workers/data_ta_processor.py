@@ -63,22 +63,27 @@ class TAScanner:
         return df['close'].ewm(span=period, adjust=False).mean()
 
     async def fetch_bar_data(self, timeframe: TimeFrame, days_back: int) -> pd.DataFrame:
-        """Fetch historical bar data for all symbols"""
         if not self.symbols:
             active_assets = await self.get_active_assets()
             self.symbols = [asset['symbol'] for asset in active_assets]
-        
+
         end_date = datetime.now()
         start_date = end_date - timedelta(days=days_back)
-        
-        request = StockBarsRequest(
-            symbol_or_symbols=self.symbols,
-            timeframe=timeframe,
-            start=start_date,
-            end=end_date
-        )
-        bars = self.stock_historical_data_client.get_stock_bars(request)
-        return bars.df
+        batch_size = 1000
+        all_dfs = []
+
+        for i in range(0, len(self.symbols), batch_size):
+            batch = self.symbols[i:i + batch_size]
+            request = StockBarsRequest(
+                symbol_or_symbols=batch,
+                timeframe=timeframe,
+                start=start_date,
+                end=end_date
+            )
+            bars = self.stock_historical_data_client.get_stock_bars(request)
+            all_dfs.append(bars.df)
+
+        return pd.concat(all_dfs) if all_dfs else pd.DataFrame()
 
     def store_results(self, scanner_type: str, results: List[Dict]):
         """Store scanner results in MongoDB"""
@@ -113,6 +118,9 @@ class TAScanner:
             try:
                 symbol_data = bars_df[bars_df.index.get_level_values('symbol') == symbol]
                 if symbol_data.empty:
+                    continue
+
+                if len(symbol_data) < 2:
                     continue
 
                 latest_bar = symbol_data.iloc[-1]
