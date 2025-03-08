@@ -113,10 +113,6 @@ def create_dashboard():
             bollinger_squeeze_card()
         logger.info("TA cards added")
 
-        # Watchlist Charts
-        watchlist_chart_card(watchlist)
-        logger.info("Watchlist chart added")
-
     ui.button("Toggle Left Sidebar", on_click=left_sidebar.toggle).classes("fixed bottom-4 left-4 bg-gray-600 text-white px-4 py-2 rounded")
     ui.button("Toggle Watchlist", on_click=right_sidebar.toggle).classes("fixed bottom-4 right-4 bg-gray-600 text-white px-4 py-2 rounded")
     logger.info("Sidebar buttons added")

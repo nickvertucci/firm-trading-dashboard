@@ -20,21 +20,27 @@ def ema_crossover_card():
         content = ui.column().classes("w-full")
 
         async def update_card():
-            """Update the card with the latest EMA crossover data"""
+            """Update the card with the latest EMA crossover data, sorted by percent change"""
             ta_data = await fetch_ema_crossover_data()
+            # Sort by percent_change, highest to lowest, handling non-numeric values
+            sorted_data = sorted(
+                ta_data,
+                key=lambda x: float(x.get("percent_change", -float('inf')) or -float('inf')),
+                reverse=True
+            )
             content.clear()
             with content:
-                if not ta_data:
+                if not sorted_data:
                     ui.label("No EMA crossover data available").classes("text-gray-600 text-sm")
                 else:
                     with ui.grid(columns=5).classes("w-full gap-1"):
                         ui.label("Ticker").classes("text-xs font-semibold text-gray-700")
                         ui.label("Price").classes("text-xs font-semibold text-gray-700")
-                        ui.label("% Change").classes("text-xs font-semibold text-gray-700")
+                        ui.label("% CHG").classes("text-xs font-semibold text-gray-700")
                         ui.label("EMA9").classes("text-xs font-semibold text-gray-700")
                         ui.label("EMA26").classes("text-xs font-semibold text-gray-700")
 
-                        for item in ta_data[:5]:
+                        for item in sorted_data[:5]:  # Use sorted_data here
                             symbol = item.get("symbol", "N/A")
                             price = item.get("price", "N/A")
                             price_str = f"${price:.2f}" if isinstance(price, (int, float)) else "$N/A"
