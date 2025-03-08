@@ -6,7 +6,7 @@ async def fetch_ema_crossover_data():
     """Fetch EMA crossover data from the API"""
     async with httpx.AsyncClient(timeout=30.0) as client:
         try:
-            response = await client.get("http://localhost:8000/get_ta_data", params={"scanner_type": "ema_crossover", "limit": 10})
+            response = await client.get("http://localhost:8000/api/get_ta_data", params={"scanner_type": "ema_crossover", "limit": 10})
             response.raise_for_status()
             return response.json().get("data", [])
         except httpx.HTTPError as e:

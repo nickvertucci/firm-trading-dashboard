@@ -65,10 +65,16 @@ class TAScanner:
         return filtered_assets
 
     async def _load_symbols(self):
-        """Load symbols once during initialization"""
-        active_assets = await self.get_active_assets()
-        self.symbols = [asset['symbol'] for asset in active_assets]
-        logger.info(f"Loaded {len(self.symbols)} active symbols")
+        """Load symbols asynchronously with a delay to avoid blocking startup"""
+        await asyncio.sleep(1)  # Brief delay to let UI render first
+        start_time = datetime.now()
+        try:
+            active_assets = await self.get_active_assets()
+            self.symbols = [asset['symbol'] for asset in active_assets]
+            logger.info(f"Loaded {len(self.symbols)} active symbols in {(datetime.now() - start_time).total_seconds()}s")
+        except Exception as e:
+            logger.error(f"Error loading symbols: {str(e)}")
+            self.symbols = []
 
     def calculate_ema(self, df: pd.DataFrame, period: int) -> pd.Series:
         """Calculate Exponential Moving Average for given period"""
@@ -99,8 +105,12 @@ class TAScanner:
         return upper_band, lower_band
 
     async def fetch_bar_data(self, timeframe: TimeFrame, days_back: int) -> pd.DataFrame:
+        while not self.symbols and self.running:  # Wait for symbols if not yet loaded
+            logger.info("Waiting for symbols to load before fetching bar data...")
+            await asyncio.sleep(1)
         if not self.symbols:
-            await self._load_symbols()
+            logger.warning("No symbols available for fetch_bar_data")
+            return pd.DataFrame()
 
         end_date = datetime.now()
         start_date = end_date - timedelta(days=days_back)
@@ -115,8 +125,11 @@ class TAScanner:
                 start=start_date,
                 end=end_date
             )
-            bars = self.stock_historical_data_client.get_stock_bars(request)
-            all_dfs.append(bars.df)
+            try:
+                bars = self.stock_historical_data_client.get_stock_bars(request)
+                all_dfs.append(bars.df)
+            except Exception as e:
+                logger.error(f"Error fetching bar data for batch {i//batch_size}: {str(e)}")
 
         return pd.concat(all_dfs) if all_dfs else pd.DataFrame()
 
@@ -189,13 +202,21 @@ class TAScanner:
 
     async def scan_relative_volume(self) -> List[Dict]:
         """Scan for stocks with relative volume >= 2 and current volume > 100,000 using Snapshot endpoint"""
+        while not self.symbols and self.running:  # Wait for symbols if not yet loaded
+            logger.info("Waiting for symbols to load before scanning relative volume...")
+            await asyncio.sleep(1)
         if not self.symbols:
-            await self._load_symbols()
+            logger.warning("No symbols available for scan_relative_volume")
+            return []
 
         logger.info(f"Scanning {len(self.symbols)} tickers for Relative Volume...")
         request = StockSnapshotRequest(symbol_or_symbols=self.symbols, feed=DataFeed.IEX)
-        snapshots = self.stock_historical_data_client.get_stock_snapshot(request)
-        
+        try:
+            snapshots = self.stock_historical_data_client.get_stock_snapshot(request)
+        except Exception as e:
+            logger.error(f"Error fetching snapshots for relative volume: {str(e)}")
+            return []
+
         results = []
 
         for symbol in tqdm(self.symbols, desc="Processing tickers (RVol)"):
@@ -510,10 +531,17 @@ class TAScanner:
                 self.task_queue.task_done()
             except Exception as e:
                 logger.error(f"Worker error: {str(e)}")
+                self.task_queue.task_done()  # Ensure task is marked done even on error
 
     async def scheduler(self, scan_interval: int = 300):
         """Schedule scans by adding them to the task queue"""
-        await self._load_symbols()
+        # Wait for symbols to be loaded before starting scans
+        while not self.symbols and self.running:
+            logger.info("Waiting for symbols to load before scheduling scans...")
+            await asyncio.sleep(1)
+        if not self.running:
+            return
+
         while self.running:
             logger.info(f"Scheduling scans at {datetime.now()}")
             await self.task_queue.put(self.scan_ema_crossover)
@@ -527,9 +555,13 @@ class TAScanner:
             await asyncio.sleep(scan_interval)
 
     async def run(self, scan_interval: int = 300, num_workers: int = 1):
-        """Run the scanner with a task queue"""
+        """Run the scanner with a task queue in the background"""
         self.running = True
+        logger.info("Starting TA scanner")
         try:
+            # Start loading symbols in the background
+            asyncio.create_task(self._load_symbols())
+            # Start workers and scheduler
             workers = [asyncio.create_task(self.worker()) for _ in range(num_workers)]
             scheduler = asyncio.create_task(self.scheduler(scan_interval))
             await asyncio.gather(scheduler, *workers)
