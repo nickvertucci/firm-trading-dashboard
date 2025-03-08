@@ -4,6 +4,7 @@ import pandas as pd
 from datetime import datetime, timedelta
 import os
 from typing import List, Dict
+import logging
 from dotenv import load_dotenv
 from tqdm.asyncio import tqdm
 import pymongo
@@ -14,6 +15,10 @@ from alpaca.data.enums import DataFeed
 from alpaca.trading.requests import GetAssetsRequest
 from alpaca.trading.enums import AssetExchange, AssetStatus
 from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # Load environment variables
 load_dotenv()
@@ -31,7 +36,6 @@ class TAScanner:
     """Technical Analysis Scanner for stock data with MongoDB storage"""
 
     def __init__(self):
-        # Setup Alpaca clients
         self.trade_client = TradingClient(
             api_key=os.getenv("ALPACA_API_KEY"),
             secret_key=os.getenv("ALPACA_SECRET_KEY"),
@@ -42,6 +46,8 @@ class TAScanner:
             secret_key=os.getenv("ALPACA_SECRET_KEY")
         )
         self.symbols = []
+        self.task_queue = asyncio.Queue()
+        self.running = False
 
     async def get_active_assets(self) -> List[Dict]:
         """Get all active US equity assets (no periods in symbol, optional limit)"""
@@ -50,22 +56,51 @@ class TAScanner:
             asset_class="us_equity"
         ))
         filtered_assets = [
-            asset.__dict__ 
-            for asset in assets 
-            if asset.tradable 
-            and asset.exchange in [AssetExchange.NASDAQ] 
-            and '.' not in asset.symbol  # Exclude symbols with periods
+            asset.__dict__
+            for asset in assets
+            if asset.tradable
+            and asset.exchange in [AssetExchange.NASDAQ]
+            and '.' not in asset.symbol
         ]
-        return filtered_assets  # Optional: Add [:10] for testing
+        return filtered_assets
+
+    async def _load_symbols(self):
+        """Load symbols once during initialization"""
+        active_assets = await self.get_active_assets()
+        self.symbols = [asset['symbol'] for asset in active_assets]
+        logger.info(f"Loaded {len(self.symbols)} active symbols")
 
     def calculate_ema(self, df: pd.DataFrame, period: int) -> pd.Series:
         """Calculate Exponential Moving Average for given period"""
         return df['close'].ewm(span=period, adjust=False).mean()
 
+    def calculate_rsi(self, df: pd.DataFrame, period: int = 14) -> pd.Series:
+        """Calculate RSI for given period"""
+        delta = df['close'].diff()
+        gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
+        rs = gain / loss
+        return 100 - (100 / (1 + rs))
+
+    def calculate_macd(self, df: pd.DataFrame, fast: int = 12, slow: int = 26, signal: int = 9) -> tuple:
+        """Calculate MACD, signal line, and histogram"""
+        ema_fast = df['close'].ewm(span=fast, adjust=False).mean()
+        ema_slow = df['close'].ewm(span=slow, adjust=False).mean()
+        macd = ema_fast - ema_slow
+        signal_line = macd.ewm(span=signal, adjust=False).mean()
+        return macd, signal_line
+
+    def calculate_bollinger_bands(self, df: pd.DataFrame, period: int = 20, std_dev: int = 2) -> tuple:
+        """Calculate Bollinger Bands"""
+        sma = df['close'].rolling(window=period).mean()
+        std = df['close'].rolling(window=period).std()
+        upper_band = sma + (std * std_dev)
+        lower_band = sma - (std * std_dev)
+        return upper_band, lower_band
+
     async def fetch_bar_data(self, timeframe: TimeFrame, days_back: int) -> pd.DataFrame:
         if not self.symbols:
-            active_assets = await self.get_active_assets()
-            self.symbols = [asset['symbol'] for asset in active_assets]
+            await self._load_symbols()
 
         end_date = datetime.now()
         start_date = end_date - timedelta(days=days_back)
@@ -96,7 +131,7 @@ class TAScanner:
                 **result,
                 "scanner_type": scanner_type,
                 "timestamp": timestamp,
-                "timeframe": "1D" if scanner_type == "relative_volume" else "4H",
+                "timeframe": "1D" if scanner_type in ["relative_volume", "momentum_breakout", "volume_spike", "macd_crossover", "bollinger_squeeze"] else "4H",
                 "scan_date": timestamp.strftime("%Y-%m-%d")
             }
             for result in results
@@ -104,23 +139,20 @@ class TAScanner:
         
         try:
             collection.insert_many(documents)
-            print(f"Stored {len(documents)} {scanner_type} results in MongoDB")
+            logger.info(f"Stored {len(documents)} {scanner_type} results in MongoDB")
         except Exception as e:
-            print(f"Error storing {scanner_type} results in MongoDB: {str(e)}")
+            logger.error(f"Error storing {scanner_type} results in MongoDB: {str(e)}")
 
     async def scan_ema_crossover(self, timeframe: TimeFrame = TimeFrame(4, TimeFrameUnit.Hour), days_back: int = 5) -> List[Dict]:
         """Scan for stocks with 9/26 EMA crossover, price $3-$8, and >3% change"""
         bars_df = await self.fetch_bar_data(timeframe, days_back)
         results = []
 
-        print(f"Scanning {len(self.symbols)} tickers for EMA crossover...")
-        for symbol in tqdm(self.symbols, desc="Processing tickers"):
+        logger.info(f"Scanning {len(self.symbols)} tickers for EMA crossover...")
+        for symbol in tqdm(self.symbols, desc="Processing tickers (EMA)"):
             try:
                 symbol_data = bars_df[bars_df.index.get_level_values('symbol') == symbol]
-                if symbol_data.empty:
-                    continue
-
-                if len(symbol_data) < 2:
+                if symbol_data.empty or len(symbol_data) < 2:
                     continue
 
                 latest_bar = symbol_data.iloc[-1]
@@ -149,7 +181,7 @@ class TAScanner:
                     })
 
             except Exception as e:
-                print(f"Error processing {symbol}: {str(e)}")
+                logger.error(f"Error processing {symbol} in EMA scan: {str(e)}")
                 continue
 
         self.store_results("ema_crossover", results)
@@ -157,25 +189,23 @@ class TAScanner:
 
     async def scan_relative_volume(self) -> List[Dict]:
         """Scan for stocks with relative volume >= 2 and current volume > 100,000 using Snapshot endpoint"""
-        print(f"Scanning {len(self.symbols)} tickers for Relative Volume...")
-        
         if not self.symbols:
-            active_assets = await self.get_active_assets()
-            self.symbols = [asset['symbol'] for asset in active_assets]
+            await self._load_symbols()
 
+        logger.info(f"Scanning {len(self.symbols)} tickers for Relative Volume...")
         request = StockSnapshotRequest(symbol_or_symbols=self.symbols, feed=DataFeed.IEX)
         snapshots = self.stock_historical_data_client.get_stock_snapshot(request)
         
         results = []
 
-        for symbol in tqdm(self.symbols, desc="Processing tickers"):
+        for symbol in tqdm(self.symbols, desc="Processing tickers (RVol)"):
             try:
                 snapshot = snapshots.get(symbol)
                 if not snapshot or not snapshot.daily_bar:
                     continue
 
                 current_volume = snapshot.daily_bar.volume
-                if current_volume <= 100000:  # Note: You had 100,000 here, not 10,000
+                if current_volume <= 100000:
                     continue
 
                 close_price = snapshot.daily_bar.close
@@ -203,45 +233,316 @@ class TAScanner:
                     })
 
             except Exception as e:
-                print(f"Error processing {symbol}: {str(e)}")
+                logger.error(f"Error processing {symbol} in RVol scan: {str(e)}")
                 continue
 
         self.store_results("relative_volume", results)
         return results
 
-    async def run(self, scan_interval: int = 300):
-        """Run multiple scanners continuously with sorted results"""
-        while True:
+    async def scan_momentum_breakout(self, timeframe: TimeFrame = TimeFrame.Day, days_back: int = 20) -> List[Dict]:
+        """Scan for stocks breaking out with high momentum"""
+        bars_df = await self.fetch_bar_data(timeframe, days_back)
+        results = []
+
+        logger.info(f"Scanning {len(self.symbols)} tickers for momentum breakout...")
+        for symbol in tqdm(self.symbols, desc="Processing tickers (Breakout)"):
             try:
-                print(f"Starting stock scan at {datetime.now()}")
-                
-                # EMA Crossover Scan
-                ema_results = await self.scan_ema_crossover()
-                if ema_results:
-                    # Sort by percent_change, highest to lowest
-                    ema_results = sorted(ema_results, key=lambda x: x['percent_change'], reverse=True)
-                    print(f"EMA Crossover - Found {len(ema_results)} matches (sorted by % change):")
-                    for stock in ema_results:
-                        print(f"Symbol: {stock['symbol']}, Price: ${stock['price']:.2f}, Change: {stock['percent_change']:.2f}%, EMA9: {stock['ema_9']:.2f}, EMA26: {stock['ema_26']:.2f}")
+                symbol_data = bars_df[bars_df.index.get_level_values('symbol') == symbol]
+                if len(symbol_data) < days_back:
+                    continue
 
-                # Relative Volume Scan
-                rvol_results = await self.scan_relative_volume()
-                if rvol_results:
-                    # Sort by relative_volume, highest to lowest
-                    rvol_results = sorted(rvol_results, key=lambda x: x['relative_volume'], reverse=True)
-                    print(f"Relative Volume - Found {len(rvol_results)} matches (sorted by RVol):")
-                    for stock in rvol_results:
-                        print(f"Symbol: {stock['symbol']}, Price: ${stock['price']:.2f}, RVol: {stock['relative_volume']:.2f}, Vol: {stock['current_volume']}")
+                latest_bar = symbol_data.iloc[-1]
+                current_price = latest_bar['close']
+                current_volume = latest_bar['volume']
 
-                if not (ema_results or rvol_results):
-                    print("No stocks matched any criteria")
+                if not (2 <= current_price <= 20) or current_volume <= 100000:
+                    continue
+
+                past_bars = symbol_data.iloc[:-1]
+                highest_high = past_bars['high'].max()
+                avg_volume = past_bars['volume'].mean()
+
+                if current_price > highest_high and current_volume > avg_volume * 1.5:
+                    results.append({
+                        'symbol': symbol,
+                        'price': current_price,
+                        'volume': current_volume,
+                        'highest_high': highest_high,
+                        'avg_volume': avg_volume
+                    })
 
             except Exception as e:
-                print(f"Error in run: {str(e)}")
+                logger.error(f"Error processing {symbol} in breakout scan: {str(e)}")
+                continue
 
-            print("\nWaiting for next scan...")
+        self.store_results("momentum_breakout", results)
+        return results
+
+    async def scan_rsi_divergence(self, timeframe: TimeFrame = TimeFrame.Day, days_back: int = 20) -> List[Dict]:
+        """Scan for RSI divergence indicating potential reversals"""
+        bars_df = await self.fetch_bar_data(timeframe, days_back)
+        results = []
+
+        logger.info(f"Scanning {len(self.symbols)} tickers for RSI divergence...")
+        for symbol in tqdm(self.symbols, desc="Processing tickers (RSI Div)"):
+            try:
+                symbol_data = bars_df[bars_df.index.get_level_values('symbol') == symbol]
+                if len(symbol_data) < days_back:
+                    continue
+
+                current_price = symbol_data['close'].iloc[-1]
+                if not (1 <= current_price <= 15):
+                    continue
+
+                rsi = self.calculate_rsi(symbol_data)
+                latest_rsi = rsi.iloc[-1]
+                prev_rsi = rsi.iloc[-2]
+                latest_close = symbol_data['close'].iloc[-1]
+                prev_close = symbol_data['close'].iloc[-2]
+
+                if latest_close < prev_close and latest_rsi > prev_rsi and latest_rsi < 30:
+                    results.append({
+                        'symbol': symbol,
+                        'price': latest_close,
+                        'rsi': latest_rsi,
+                        'type': 'bullish_divergence'
+                    })
+                elif latest_close > prev_close and latest_rsi < prev_rsi and latest_rsi > 70:
+                    results.append({
+                        'symbol': symbol,
+                        'price': latest_close,
+                        'rsi': latest_rsi,
+                        'type': 'bearish_divergence'
+                    })
+
+            except Exception as e:
+                logger.error(f"Error processing {symbol} in RSI divergence scan: {str(e)}")
+                continue
+
+        self.store_results("rsi_divergence", results)
+        return results
+
+    async def scan_volume_spike(self, timeframe: TimeFrame = TimeFrame.Day, days_back: int = 20) -> List[Dict]:
+        """Scan for stocks with significant volume spikes"""
+        bars_df = await self.fetch_bar_data(timeframe, days_back)
+        results = []
+
+        logger.info(f"Scanning {len(self.symbols)} tickers for volume spikes...")
+        for symbol in tqdm(self.symbols, desc="Processing tickers (Vol Spike)"):
+            try:
+                symbol_data = bars_df[bars_df.index.get_level_values('symbol') == symbol]
+                if len(symbol_data) < days_back:
+                    continue
+
+                latest_bar = symbol_data.iloc[-1]
+                current_price = latest_bar['close']
+                current_volume = latest_bar['volume']
+                prev_close = symbol_data['close'].iloc[-2]
+                percent_change = ((current_price - prev_close) / prev_close) * 100
+
+                if not (5 <= current_price <= 50) or abs(percent_change) <= 5:
+                    continue
+
+                avg_volume = symbol_data['volume'].iloc[:-1].mean()
+                volume_ratio = current_volume / avg_volume if avg_volume > 0 else 0
+
+                if volume_ratio >= 3:
+                    results.append({
+                        'symbol': symbol,
+                        'price': current_price,
+                        'volume': current_volume,
+                        'avg_volume': avg_volume,
+                        'volume_ratio': volume_ratio,
+                        'percent_change': percent_change
+                    })
+
+            except Exception as e:
+                logger.error(f"Error processing {symbol} in volume spike scan: {str(e)}")
+                continue
+
+        self.store_results("volume_spike", results)
+        return results
+
+    async def scan_macd_crossover(self, timeframe: TimeFrame = TimeFrame.Day, days_back: int = 30) -> List[Dict]:
+        """Scan for MACD crossovers"""
+        bars_df = await self.fetch_bar_data(timeframe, days_back)
+        results = []
+
+        logger.info(f"Scanning {len(self.symbols)} tickers for MACD crossover...")
+        for symbol in tqdm(self.symbols, desc="Processing tickers (MACD)"):
+            try:
+                symbol_data = bars_df[bars_df.index.get_level_values('symbol') == symbol]
+                if len(symbol_data) < days_back:
+                    continue
+
+                latest_bar = symbol_data.iloc[-1]
+                current_price = latest_bar['close']
+                current_volume = latest_bar['volume']
+
+                if not (2 <= current_price <= 25) or current_volume <= 50000:
+                    continue
+
+                macd, signal_line = self.calculate_macd(symbol_data)
+                latest_macd = macd.iloc[-1]
+                latest_signal = signal_line.iloc[-1]
+                prev_macd = macd.iloc[-2]
+                prev_signal = signal_line.iloc[-2]
+
+                if prev_macd <= prev_signal and latest_macd > latest_signal:
+                    results.append({
+                        'symbol': symbol,
+                        'price': current_price,
+                        'macd': latest_macd,
+                        'signal': latest_signal,
+                        'type': 'bullish_crossover'
+                    })
+                elif prev_macd >= prev_signal and latest_macd < latest_signal:
+                    results.append({
+                        'symbol': symbol,
+                        'price': current_price,
+                        'macd': latest_macd,
+                        'signal': latest_signal,
+                        'type': 'bearish_crossover'
+                    })
+
+            except Exception as e:
+                logger.error(f"Error processing {symbol} in MACD scan: {str(e)}")
+                continue
+
+        self.store_results("macd_crossover", results)
+        return results
+
+    async def scan_bollinger_squeeze(self, timeframe: TimeFrame = TimeFrame.Day, days_back: int = 40) -> List[Dict]:
+        """Scan for Bollinger Band squeezes"""
+        bars_df = await self.fetch_bar_data(timeframe, days_back)
+        results = []
+
+        logger.info(f"Scanning {len(self.symbols)} tickers for Bollinger Band squeeze...")
+        for symbol in tqdm(self.symbols, desc="Processing tickers (BB Squeeze)"):
+            try:
+                symbol_data = bars_df[bars_df.index.get_level_values('symbol') == symbol]
+                if len(symbol_data) < days_back:
+                    continue
+
+                latest_bar = symbol_data.iloc[-1]
+                current_price = latest_bar['close']
+                current_volume = latest_bar['volume']
+
+                if not (3 <= current_price <= 30) or current_volume <= 75000:
+                    continue
+
+                upper_band, lower_band = self.calculate_bollinger_bands(symbol_data)
+                band_width = upper_band - lower_band
+                latest_width = band_width.iloc[-1]
+                past_widths = band_width.iloc[-21:-1]
+
+                if latest_width < past_widths.min():
+                    results.append({
+                        'symbol': symbol,
+                        'price': current_price,
+                        'band_width': latest_width,
+                        'upper_band': upper_band.iloc[-1],
+                        'lower_band': lower_band.iloc[-1]
+                    })
+
+            except Exception as e:
+                logger.error(f"Error processing {symbol} in BB squeeze scan: {str(e)}")
+                continue
+
+        self.store_results("bollinger_squeeze", results)
+        return results
+
+    async def worker(self):
+        """Worker coroutine to process tasks from the queue"""
+        while self.running:
+            try:
+                scan_func = await self.task_queue.get()
+                logger.info(f"Starting task: {scan_func.__name__} at {datetime.now()}")
+
+                results = await scan_func()
+                if results:
+                    if scan_func.__name__ == "scan_ema_crossover":
+                        results = sorted(results, key=lambda x: x['percent_change'], reverse=True)
+                        logger.info(f"EMA Crossover - Found {len(results)} matches (sorted by % change):")
+                        for stock in results[:5]:
+                            logger.info(f"Symbol: {stock['symbol']}, Price: ${stock['price']:.2f}, "
+                                       f"Change: {stock['percent_change']:.2f}%, EMA9: {stock['ema_9']:.2f}, "
+                                       f"EMA26: {stock['ema_26']:.2f}")
+                    elif scan_func.__name__ == "scan_relative_volume":
+                        results = sorted(results, key=lambda x: x['relative_volume'], reverse=True)
+                        logger.info(f"Relative Volume - Found {len(results)} matches (sorted by RVol):")
+                        for stock in results[:5]:
+                            logger.info(f"Symbol: {stock['symbol']}, Price: ${stock['price']:.2f}, "
+                                       f"RVol: {stock['relative_volume']:.2f}, Vol: {stock['current_volume']}")
+                    elif scan_func.__name__ == "scan_momentum_breakout":
+                        results = sorted(results, key=lambda x: x['price'] - x['highest_high'], reverse=True)
+                        logger.info(f"Momentum Breakout - Found {len(results)} matches (sorted by breakout strength):")
+                        for stock in results[:5]:
+                            logger.info(f"Symbol: {stock['symbol']}, Price: ${stock['price']:.2f}, "
+                                       f"Vol: {stock['volume']}, High: {stock['highest_high']:.2f}")
+                    elif scan_func.__name__ == "scan_rsi_divergence":
+                        results = sorted(results, key=lambda x: x['rsi'], reverse=True)
+                        logger.info(f"RSI Divergence - Found {len(results)} matches (sorted by RSI):")
+                        for stock in results[:5]:
+                            logger.info(f"Symbol: {stock['symbol']}, Price: ${stock['price']:.2f}, "
+                                       f"RSI: {stock['rsi']:.2f}, Type: {stock['type']}")
+                    elif scan_func.__name__ == "scan_volume_spike":
+                        results = sorted(results, key=lambda x: x['volume_ratio'], reverse=True)
+                        logger.info(f"Volume Spike - Found {len(results)} matches (sorted by Vol Ratio):")
+                        for stock in results[:5]:
+                            logger.info(f"Symbol: {stock['symbol']}, Price: ${stock['price']:.2f}, "
+                                       f"Vol Ratio: {stock['volume_ratio']:.2f}, Change: {stock['percent_change']:.2f}%")
+                    elif scan_func.__name__ == "scan_macd_crossover":
+                        results = sorted(results, key=lambda x: abs(x['macd'] - x['signal']), reverse=True)
+                        logger.info(f"MACD Crossover - Found {len(results)} matches (sorted by MACD strength):")
+                        for stock in results[:5]:
+                            logger.info(f"Symbol: {stock['symbol']}, Price: ${stock['price']:.2f}, "
+                                       f"MACD: {stock['macd']:.2f}, Signal: {stock['signal']:.2f}, Type: {stock['type']}")
+                    elif scan_func.__name__ == "scan_bollinger_squeeze":
+                        results = sorted(results, key=lambda x: x['band_width'])
+                        logger.info(f"Bollinger Squeeze - Found {len(results)} matches (sorted by band width):")
+                        for stock in results[:5]:
+                            logger.info(f"Symbol: {stock['symbol']}, Price: ${stock['price']:.2f}, "
+                                       f"Width: {stock['band_width']:.2f}, Upper: {stock['upper_band']:.2f}")
+                else:
+                    logger.info(f"{scan_func.__name__} - No stocks matched criteria")
+
+                self.task_queue.task_done()
+            except Exception as e:
+                logger.error(f"Worker error: {str(e)}")
+
+    async def scheduler(self, scan_interval: int = 300):
+        """Schedule scans by adding them to the task queue"""
+        await self._load_symbols()
+        while self.running:
+            logger.info(f"Scheduling scans at {datetime.now()}")
+            await self.task_queue.put(self.scan_ema_crossover)
+            await self.task_queue.put(self.scan_relative_volume)
+            await self.task_queue.put(self.scan_momentum_breakout)
+            await self.task_queue.put(self.scan_rsi_divergence)
+            await self.task_queue.put(self.scan_volume_spike)
+            await self.task_queue.put(self.scan_macd_crossover)
+            await self.task_queue.put(self.scan_bollinger_squeeze)
+            logger.info(f"Queue size: {self.task_queue.qsize()}")
             await asyncio.sleep(scan_interval)
+
+    async def run(self, scan_interval: int = 300, num_workers: int = 1):
+        """Run the scanner with a task queue"""
+        self.running = True
+        try:
+            workers = [asyncio.create_task(self.worker()) for _ in range(num_workers)]
+            scheduler = asyncio.create_task(self.scheduler(scan_interval))
+            await asyncio.gather(scheduler, *workers)
+        except asyncio.CancelledError:
+            self.running = False
+            for task in asyncio.all_tasks():
+                task.cancel()
+            await asyncio.gather(*asyncio.all_tasks(), return_exceptions=True)
+            logger.info("Scanner shut down gracefully")
+        except Exception as e:
+            logger.error(f"Run error: {str(e)}")
+            self.running = False
 
 if __name__ == "__main__":
     scanner = TAScanner()
-    asyncio.run(scanner.run())
+    asyncio.run(scanner.run(scan_interval=300, num_workers=4))
